@@ -1,0 +1,20 @@
+{
+  "name": "supabasebutno",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Supabase-lite: a small self-hosted multi-project BaaS (REST over SQLite, auth, policies, storage, realtime)",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22.9"
+  },
+  "scripts": {
+    "dev": "npm run dev -w @supabasebutno/server",
+    "build": "npm run build --workspaces --if-present",
+    "start": "npm run start -w @supabasebutno/server",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  }
+}
