@@ -14,15 +14,23 @@ export interface RunResult {
   lastInsertRowid: number | bigint;
 }
 
+export type ConstraintKind = 'unique' | 'not_null' | 'foreign_key' | 'check';
+
 /** Dialect-specific bits the SQL generators need. */
 export interface Dialect {
   readonly name: 'sqlite';
   /** Quote an identifier. Callers must still validate names; this is defense in depth. */
   quoteIdent(name: string): string;
-  /** Positional placeholder for the n-th (1-based) bound parameter. */
+  /**
+   * Placeholder for the n-th (1-based) bound parameter. SQLite uses plain `?`, which
+   * is positional: SQL builders must therefore append parameters in the order the
+   * placeholders appear in the final statement text.
+   */
   placeholder(n: number): string;
   /** True if the error is a UNIQUE / PRIMARY KEY constraint violation. */
   isUniqueViolation(err: unknown): boolean;
+  /** Classifies integrity-constraint errors so the API can answer 4xx instead of 500. */
+  constraintViolation(err: unknown): { kind: ConstraintKind; column?: string } | null;
 }
 
 export interface Database {

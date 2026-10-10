@@ -1,5 +1,5 @@
 import BetterSqlite3 from 'better-sqlite3';
-import type { Database, Dialect, Row, RunResult, SqlValue } from '../driver.js';
+import type { ConstraintKind, Database, Dialect, Row, RunResult, SqlValue } from '../driver.js';
 
 export const sqliteDialect: Dialect = {
   name: 'sqlite',
@@ -11,6 +11,21 @@ export const sqliteDialect: Dialect = {
   isUniqueViolation(err) {
     const code = (err as { code?: unknown } | null)?.code;
     return code === 'SQLITE_CONSTRAINT_UNIQUE' || code === 'SQLITE_CONSTRAINT_PRIMARYKEY';
+  },
+  constraintViolation(err) {
+    const e = err as { code?: unknown; message?: unknown } | null;
+    const kinds: Record<string, ConstraintKind> = {
+      SQLITE_CONSTRAINT_UNIQUE: 'unique',
+      SQLITE_CONSTRAINT_PRIMARYKEY: 'unique',
+      SQLITE_CONSTRAINT_NOTNULL: 'not_null',
+      SQLITE_CONSTRAINT_FOREIGNKEY: 'foreign_key',
+      SQLITE_CONSTRAINT_CHECK: 'check',
+    };
+    const kind = typeof e?.code === 'string' ? kinds[e.code] : undefined;
+    if (!kind) return null;
+    // e.g. "UNIQUE constraint failed: todos.email" / "NOT NULL constraint failed: todos.title"
+    const column = /failed: "?[\w]+"?\.("?)(\w+)\1/.exec(String(e?.message ?? ''))?.[2];
+    return column ? { kind, column } : { kind };
   },
 };
 

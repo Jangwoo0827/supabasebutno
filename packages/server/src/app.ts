@@ -6,10 +6,13 @@ import { secureHeaders } from 'hono/secure-headers';
 import type { Config } from './config.js';
 import { AppError } from './core/errors.js';
 import { ProjectRegistry } from './db/registry.js';
+import { sqliteSchemaDriver } from './db/sqlite/schema.js';
 import { adminRoutes } from './http/admin-routes.js';
 import { apiKeyAuth } from './http/auth.js';
 import { onError, onNotFound } from './http/error-handler.js';
 import type { AppEnv, Deps } from './http/types.js';
+import { restRoutes } from './rest/routes.js';
+import { SchemaCache } from './schema/cache.js';
 
 export interface CreatedApp {
   app: Hono<AppEnv>;
@@ -18,7 +21,7 @@ export interface CreatedApp {
 
 export async function createApp(config: Config): Promise<CreatedApp> {
   const registry = await ProjectRegistry.open(config.dataDir);
-  const deps: Deps = { config, registry };
+  const deps: Deps = { config, registry, schemas: new SchemaCache(sqliteSchemaDriver) };
 
   const app = new Hono<AppEnv>();
   app.onError(onError);
@@ -57,6 +60,9 @@ export async function createApp(config: Config): Promise<CreatedApp> {
     const project = c.get('project');
     return c.json({ project: { id: project.id, name: project.name }, role: c.get('role') });
   });
+
+  app.use('/rest/*', apiKeyAuth(deps));
+  app.route('/rest', restRoutes(deps));
 
   app.route('/admin', adminRoutes(deps));
 

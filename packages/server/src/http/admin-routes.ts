@@ -15,7 +15,7 @@ import type { AppEnv, Deps } from './types.js';
  * Not CORS-enabled: it is meant for the operator's own tooling and the (same-origin) dashboard.
  */
 export function adminRoutes(deps: Deps): Hono<AppEnv> {
-  const { config, registry } = deps;
+  const { config, registry, schemas } = deps;
   const admin = new Hono<AppEnv>();
 
   admin.use('*', requireAdmin(deps));
@@ -60,6 +60,7 @@ export function adminRoutes(deps: Deps): Hono<AppEnv> {
       throw badRequest('confirmation_required', 'Deleting a project is irreversible. Repeat the request with ?confirm=<project name>');
     }
     await registry.delete(project.id);
+    schemas.invalidate(project.id);
     return c.body(null, 204);
   });
 
@@ -78,7 +79,9 @@ export function adminRoutes(deps: Deps): Hono<AppEnv> {
   admin.post('/projects/:id/tables', async (c) => {
     const project = await requireProject(c.req.param('id'));
     const input = await parseJson(c, createTableSchema);
-    return c.json(await (await tablesOf(project.id)).create(input), 201);
+    const created = await (await tablesOf(project.id)).create(input);
+    schemas.invalidate(project.id);
+    return c.json(created, 201);
   });
 
   admin.get('/projects/:id/tables/:table', async (c) => {
@@ -89,12 +92,15 @@ export function adminRoutes(deps: Deps): Hono<AppEnv> {
   admin.patch('/projects/:id/tables/:table', async (c) => {
     const project = await requireProject(c.req.param('id'));
     const input = await parseJson(c, alterTableSchema);
-    return c.json(await (await tablesOf(project.id)).alter(c.req.param('table'), input));
+    const altered = await (await tablesOf(project.id)).alter(c.req.param('table'), input);
+    schemas.invalidate(project.id);
+    return c.json(altered);
   });
 
   admin.delete('/projects/:id/tables/:table', async (c) => {
     const project = await requireProject(c.req.param('id'));
     await (await tablesOf(project.id)).drop(c.req.param('table'));
+    schemas.invalidate(project.id);
     return c.body(null, 204);
   });
 

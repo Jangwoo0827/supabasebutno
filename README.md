@@ -134,6 +134,40 @@ curl -X PATCH $B/admin/projects/$ID/tables/todos -H "$A" -H "Content-Type: appli
 **기본값:** 리터럴(문자열/숫자/불리언/`null`) 또는 `{"fn":"now"}`(timestamp), `{"fn":"uuid"}`(uuid).
 **이름 규칙:** 테이블/컬럼 모두 `^[a-z][a-z0-9_]{0,62}$` (소문자로 시작, `sqlite_` 접두사 금지).
 
+## REST API (Phase 1b)
+
+`apikey` 헤더의 키로 프로젝트가 결정되므로 URL에는 프로젝트 id가 없습니다. 지금은 `service_role` 키만 허용되고,
+`anon` 은 정책(Phase 3)이 생기기 전까지 **모든 테이블에서 403** 입니다.
+
+```bash
+export R="apikey: <service_role 키>"
+curl -X POST "$B/rest/todos" -H "$R" -H "Content-Type: application/json" -H "Prefer: return=representation" \
+     -d '[{"title":"buy milk"},{"title":"write code","done":true}]'
+curl "$B/rest/todos?done=eq.false&order=id.desc&limit=10&select=id,title" -H "$R"
+curl -X PATCH "$B/rest/todos?id=eq.1" -H "$R" -H "Content-Type: application/json" -d '{"done":true}'
+curl -X DELETE "$B/rest/todos?id=eq.1" -H "$R"
+```
+
+| 항목 | 문법 |
+|---|---|
+| 필터 | `?col=op.value` — `eq` `neq` `gt` `gte` `lt` `lte` `like` `ilike` `in.(a,b)` `is.null`/`is.true`/`is.false`. 앞에 `not.` 로 부정. 같은 컬럼을 여러 번 쓰면 AND |
+| `like` | `*` 가 와일드카드. `%`, `_` 는 문자 그대로 취급 (SQLite 의 LIKE 는 ASCII 대소문자를 구분하지 않음) |
+| 컬럼 | `select=id,title` (기본 `*`) |
+| 정렬 | `order=priority.desc,id` , `.nullsfirst` / `.nullslast` |
+| 페이징 | `limit` (기본·최대 1000), `offset`. 정렬 끝에 항상 PK 가 붙어 페이징이 결정적 |
+| 개수 | `Prefer: count=exact` → `Content-Range: 0-9/42` |
+| 쓰기 응답 | 기본은 본문 없음(POST 201 / PATCH·DELETE 204). `Prefer: return=representation` 이면 행을 반환 |
+| 일괄 INSERT | 본문이 배열이면 (최대 1000행) 한 트랜잭션 — 하나라도 실패하면 전부 취소 |
+| Upsert | `Prefer: resolution=merge-duplicates` (+ `?on_conflict=<PK 또는 UNIQUE 컬럼>`, 기본 PK) / `resolution=ignore-duplicates` |
+
+**안전장치**
+
+- 값은 전부 바인딩 파라미터이고, 테이블/컬럼 이름은 실제 스키마에 존재하는 것만 통과합니다.
+- `PATCH` / `DELETE` 는 **필터가 최소 하나 필수**입니다. 전체 대상이면 `?id=not.is.null` 처럼 명시하세요.
+- 쓰기 요청에서 `limit` / `order` / `offset` 은 무시하지 않고 **400으로 거부**합니다 (`?limit=1` 이 무시되어 전체가 수정되는 사고 방지).
+- 타입이 엄격합니다: `"1"` 을 integer 컬럼에, `1` 을 boolean 컬럼에 넣으면 400.
+- UNIQUE 위반 409 · NOT NULL 위반 400 으로 응답하고 DB 내부 메시지는 노출하지 않습니다.
+
 ### 오류 형식
 
 ```json
