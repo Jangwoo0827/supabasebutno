@@ -244,7 +244,8 @@ describe('refresh tokens', () => {
 
   it('are rejected when unknown, malformed or expired', async () => {
     const s = (await signup()).json;
-    for (const refresh_token of ['x'.repeat(43), 'short', s.refresh_token.slice(0, -1) + 'A']) {
+    const lastChar = s.refresh_token.at(-1);
+    for (const refresh_token of ['x'.repeat(43), 'short', s.refresh_token.slice(0, -1) + (lastChar === 'A' ? 'B' : 'A')]) {
       const res = await api('POST', '/auth/refresh', { body: { refresh_token } });
       expect([400, 401]).toContain(res.status);
     }

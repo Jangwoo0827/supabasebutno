@@ -1,22 +1,13 @@
 import { Hono, type Context } from 'hono';
-import { badRequest, tooManyRequests } from '../core/errors.js';
-import type { RateLimiter } from '../core/rate-limit.js';
+import { badRequest } from '../core/errors.js';
 import { clientIp } from '../http/client-ip.js';
 import { parseJson, parseOptionalJson } from '../http/helpers.js';
 import { requireUser } from '../http/auth.js';
+import { countAttempt, ensureAllowed } from '../http/rate.js';
 import type { AppEnv, Deps } from '../http/types.js';
 import { logoutSchema, recoverSchema, refreshSchema, resetSchema, signInSchema, signUpSchema, updateUserSchema } from './schemas.js';
 import * as service from './service.js';
 import type { AuthEnv } from './service.js';
-
-/** Throws 429 if the key is already at its limit (does not record anything). */
-function ensureAllowed(limiter: RateLimiter, key: string): void {
-  if (!limiter.allowed(key)) throw tooManyRequests(limiter.retryAfterSeconds(key));
-}
-/** Records an attempt; throws 429 once the limit is exceeded. */
-function countAttempt(limiter: RateLimiter, key: string): void {
-  if (!limiter.hit(key)) throw tooManyRequests(limiter.retryAfterSeconds(key));
-}
 
 /**
  * End-user authentication, scoped to the project named by the apikey.

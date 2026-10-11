@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
@@ -17,6 +18,9 @@ import { onError, onNotFound } from './http/error-handler.js';
 import type { AppEnv, Deps } from './http/types.js';
 import { restRoutes } from './rest/routes.js';
 import { SchemaCache } from './schema/cache.js';
+import { LocalDiskBackend, type StorageBackend } from './storage/backend.js';
+import { publicStorageRoutes, storageRoutes } from './storage/routes.js';
+import { StorageService } from './storage/service.js';
 
 export interface CreatedApp {
   app: Hono<AppEnv>;
@@ -28,16 +32,20 @@ export interface AppOverrides {
   mailer?: Mailer;
   /** Current time in ms. */
   now?: () => number;
+  /** Where uploaded files are kept (default: local disk under the data directory). */
+  storageBackend?: StorageBackend;
 }
 
 export async function createApp(config: Config, overrides: AppOverrides = {}): Promise<CreatedApp> {
   const registry = await ProjectRegistry.open(config.dataDir);
   const now = overrides.now ?? Date.now;
+  const backend = overrides.storageBackend ?? new LocalDiskBackend(join(config.dataDir, 'projects'));
   const deps: Deps = {
     config,
     registry,
     schemas: new SchemaCache(sqliteSchemaDriver),
     policies: new PolicyStore(),
+    storage: new StorageService(backend, config, now),
     mailer: overrides.mailer ?? new ConsoleMailer(),
     limits: createLimits(now),
     now,
@@ -48,7 +56,13 @@ export async function createApp(config: Config, overrides: AppOverrides = {}): P
   app.notFound(onNotFound);
 
   app.use('*', requestId());
-  app.use('*', secureHeaders());
+  // Cross-Origin-Resource-Policy is handled below: secureHeaders would overwrite a route's own value.
+  app.use('*', secureHeaders({ crossOriginResourcePolicy: false }));
+  app.use('*', async (c, next) => {
+    await next();
+    // Responses are same-origin only by default; public file downloads opt in to being embedded elsewhere.
+    if (!c.res.headers.has('Cross-Origin-Resource-Policy')) c.header('Cross-Origin-Resource-Policy', 'same-origin');
+  });
 
   // CORS for data APIs only. /admin is never exposed cross-origin.
   if (config.corsOrigins === 'any' || config.corsOrigins.length > 0) {
@@ -56,22 +70,21 @@ export async function createApp(config: Config, overrides: AppOverrides = {}): P
     const corsMiddleware = cors({
       origin: origins === 'any' ? '*' : origins,
       allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowHeaders: ['authorization', 'apikey', 'content-type', 'prefer', 'x-client-info'],
-      exposeHeaders: ['content-range', 'x-request-id'],
+      allowHeaders: ['authorization', 'apikey', 'content-type', 'prefer', 'x-client-info', 'x-upsert'],
+      exposeHeaders: ['content-range', 'content-length', 'etag', 'x-request-id'],
       maxAge: 600,
     });
     app.use('*', (c, next) => (c.req.path.startsWith('/admin') ? next() : corsMiddleware(c, next)));
   }
 
-  app.use(
-    '*',
-    bodyLimit({
-      maxSize: config.maxJsonBytes,
-      onError: () => {
-        throw new AppError(413, 'payload_too_large', `Request body exceeds ${config.maxJsonBytes} bytes`);
-      },
-    }),
-  );
+  // JSON requests are small; file uploads stream through their own size limits (see storage/service.ts).
+  const jsonLimit = bodyLimit({
+    maxSize: config.maxJsonBytes,
+    onError: () => {
+      throw new AppError(413, 'payload_too_large', `Request body exceeds ${config.maxJsonBytes} bytes`);
+    },
+  });
+  app.use('*', (c, next) => (c.req.method === 'POST' && /\/storage\/object\//.test(c.req.path) ? next() : jsonLimit(c, next)));
 
   app.get('/health', (c) => c.json({ status: 'ok' }));
 
@@ -87,6 +100,12 @@ export async function createApp(config: Config, overrides: AppOverrides = {}): P
 
   app.use('/rest/*', apiKeyAuth(deps));
   app.route('/rest', restRoutes(deps));
+
+  // Everything under /storage needs an apikey except public downloads (their URL names the project).
+  const storageAuth = apiKeyAuth(deps);
+  app.use('/storage/*', (c, next) => (c.req.path.startsWith('/storage/public/') ? next() : storageAuth(c, next)));
+  app.route('/storage/public', publicStorageRoutes(deps));
+  app.route('/storage', storageRoutes(deps, { prefixSegments: 1 }));
 
   app.route('/admin', adminRoutes(deps));
 

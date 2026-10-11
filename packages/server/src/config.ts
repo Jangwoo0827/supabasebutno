@@ -5,6 +5,8 @@ import { z } from 'zod';
 /** <repo>/data — computed from this file's location so it doesn't depend on the cwd (npm workspaces change it). */
 const DEFAULT_DATA_DIR = fileURLToPath(new URL('../../../data', import.meta.url));
 
+const MIB = 1024 * 1024;
+
 const envSchema = z
   .object({
     PORT: z.coerce.number().int().min(1).max(65535).default(8787),
@@ -17,6 +19,9 @@ const envSchema = z
     TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(0),
     ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(86_400).default(900),
     REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+    MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(50 * MIB),
+    STORAGE_USER_QUOTA_BYTES: z.coerce.number().int().positive().default(100 * MIB),
+    STORAGE_PROJECT_QUOTA_BYTES: z.coerce.number().int().positive().default(2048 * MIB),
   })
   .refine((e) => e.ADMIN_TOKEN !== e.JWT_MASTER_SECRET, {
     path: ['JWT_MASTER_SECRET'],
@@ -36,6 +41,12 @@ export interface Config {
   trustProxyHops: number;
   accessTokenTtlSeconds: number;
   refreshTokenTtlDays: number;
+  /** Largest single upload, whatever a bucket allows. */
+  maxUploadBytes: number;
+  /** Total bytes one signed-in user may store in a project (service_role is exempt). */
+  storageUserQuotaBytes: number;
+  /** Total bytes of all files in a project. */
+  storageProjectQuotaBytes: number;
 }
 
 export class ConfigError extends Error {}
@@ -62,5 +73,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     trustProxyHops: e.TRUST_PROXY_HOPS,
     accessTokenTtlSeconds: e.ACCESS_TOKEN_TTL_SECONDS,
     refreshTokenTtlDays: e.REFRESH_TOKEN_TTL_DAYS,
+    maxUploadBytes: e.MAX_UPLOAD_BYTES,
+    storageUserQuotaBytes: e.STORAGE_USER_QUOTA_BYTES,
+    storageProjectQuotaBytes: e.STORAGE_PROJECT_QUOTA_BYTES,
   };
 }

@@ -7,7 +7,8 @@ import { sqliteSchemaDriver } from '../db/sqlite/schema.js';
 import { issueApiKeys } from '../keys.js';
 import { TableService } from '../schema/service.js';
 import { alterTableSchema, createProjectSchema, createTableSchema } from '../schema/validation.js';
-import { requireAdmin } from './auth.js';
+import { storageRoutes } from '../storage/routes.js';
+import { actAsServiceRole, requireAdmin } from './auth.js';
 import { parseJson, readJson } from './helpers.js';
 import type { AppEnv, Deps } from './types.js';
 
@@ -107,6 +108,11 @@ export function adminRoutes(deps: Deps): Hono<AppEnv> {
     policies.invalidate(project.id);
     return c.body(null, 204);
   });
+
+  // ---- storage (same handlers as /storage, acting as service_role) -------
+
+  admin.use('/projects/:id/storage/*', actAsServiceRole(deps));
+  admin.route('/projects/:id/storage', storageRoutes(deps, { prefixSegments: 4 }));
 
   // ---- access policies ---------------------------------------------------
 

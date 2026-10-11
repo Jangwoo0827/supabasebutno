@@ -1,7 +1,8 @@
 import type { Context, MiddlewareHandler } from 'hono';
 import { isSessionActive } from '../auth/service.js';
 import { verifyAccessToken } from '../auth/tokens.js';
-import { tooManyRequests, unauthorized } from '../core/errors.js';
+import { notFound, tooManyRequests, unauthorized } from '../core/errors.js';
+import { PROJECT_ID_RE } from '../core/ids.js';
 import { safeEqual } from '../core/safe-equal.js';
 import type { ProjectRecord } from '../db/registry.js';
 import { verifyApiKey } from '../keys.js';
@@ -94,6 +95,25 @@ export function apiKeyAuth(deps: Deps, opts: ApiKeyAuthOptions = {}): Middleware
         c.set('bearerError', result.reason);
       }
     }
+    await next();
+  };
+}
+
+/**
+ * For routes mounted under /admin/projects/:id/...: the admin token has already been checked,
+ * so the request acts as that project's service_role (no apikey involved).
+ */
+export function actAsServiceRole({ registry }: Deps): MiddlewareHandler<AppEnv> {
+  return async (c, next) => {
+    const id = c.req.param('id') ?? '';
+    const project = PROJECT_ID_RE.test(id) ? await registry.get(id) : undefined;
+    if (!project) throw notFound('Project');
+    c.set('project', project);
+    c.set('apiRole', 'service_role');
+    c.set('role', 'service_role');
+    c.set('userId', null);
+    c.set('sessionId', null);
+    c.set('bearerError', null);
     await next();
   };
 }

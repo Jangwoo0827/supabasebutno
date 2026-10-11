@@ -21,6 +21,9 @@ export async function makeTestApp(overrides: Partial<Config> = {}, appOverrides:
     trustProxyHops: 0,
     accessTokenTtlSeconds: 900,
     refreshTokenTtlDays: 30,
+    maxUploadBytes: 1_000_000,
+    storageUserQuotaBytes: 5_000_000,
+    storageProjectQuotaBytes: 20_000_000,
     ...overrides,
   };
 

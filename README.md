@@ -3,8 +3,8 @@
 Supabase의 핵심 기능 중 실제로 쓰는 것만 가볍게 구현한 **셀프호스팅 멀티 프로젝트 BaaS**입니다.
 Node.js + TypeScript, [Hono](https://hono.dev), SQLite(better-sqlite3).
 
-> **진행 상황** — 완료: 프로젝트 · API 키 · 테이블 DDL(1a), REST CRUD(1b), 사용자 인증(2), 접근 제어 정책(3).
-> 아직 없음: 스토리지(4), 실시간(5), SDK(6), 대시보드(7).
+> **진행 상황** — 완료: 프로젝트 · API 키 · 테이블 DDL(1a), REST CRUD(1b), 사용자 인증(2), 접근 제어 정책(3), 파일 스토리지(4).
+> 아직 없음: 실시간(5), SDK(6), 대시보드(7).
 
 ## 요구사항
 
@@ -44,7 +44,12 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 | `HOST` | `127.0.0.1` | Docker 안에서는 `0.0.0.0`, 앞단에 TLS 리버스 프록시 필수 |
 | `DATA_DIR` | `<repo>/data` | `admin.sqlite` 와 프로젝트별 데이터 위치 |
 | `CORS_ORIGINS` | (빈 값 = CORS 꺼짐) | 데이터 API 를 호출할 수 있는 origin 목록(쉼표 구분) 또는 `*`. `/admin` 에는 적용되지 않음 |
-| `MAX_JSON_BYTES` | `1048576` | JSON 요청 본문 최대 크기 |
+| `MAX_JSON_BYTES` | `1048576` | JSON 요청 본문 최대 크기 (파일 업로드는 해당 없음) |
+| `TRUST_PROXY_HOPS` | `0` | 앞단 리버스 프록시 개수. rate limit 의 클라이언트 IP 판단에 쓰임 ([인증](#사용자-인증-api-phase-2) 참고) |
+| `ACCESS_TOKEN_TTL_SECONDS` / `REFRESH_TOKEN_TTL_DAYS` | `900` / `30` | 로그인 세션 수명 |
+| `MAX_UPLOAD_BYTES` | `52428800` | 파일 1개 최대 크기 (50 MiB) |
+| `STORAGE_USER_QUOTA_BYTES` | `104857600` | 로그인 사용자 1명이 프로젝트에 저장할 수 있는 총량 (100 MiB) |
+| `STORAGE_PROJECT_QUOTA_BYTES` | `2147483648` | 프로젝트 전체 저장 총량 (2 GiB) |
 
 ## 구조
 
@@ -263,6 +268,56 @@ Supabase 의 Row Level Security 를 JSON 정책으로 대체합니다. **정책�
   "delete": { "roles": ["authenticated"], "where": { "user_id": "$uid" } }
 }
 ```
+
+## 파일 스토리지 (Phase 4)
+
+버킷 + 파일. 바이트는 `data/projects/<id>/storage/<랜덤 uuid>` 에 저장되고 **사용자가 정한 경로는 DB 의 이름표**일 뿐이라
+경로를 이용한 파일시스템 접근이 불가능합니다. 저장소는 `StorageBackend` 인터페이스([backend.ts](packages/server/src/storage/backend.ts))
+뒤에 있어 S3 호환 구현으로 교체할 수 있습니다 (구현할 메서드는 `put` `read` `remove` 세 개).
+
+### 접근 규칙 (고정, 파일별 정책 없음)
+
+| 동작 | 누가 |
+|---|---|
+| 버킷 생성·수정·삭제·목록 | `service_role` (또는 관리자 API) 만 |
+| 업로드 | 로그인한 사용자(→ 업로더가 **소유자**), `service_role`. anon 은 403 |
+| 다운로드 | **public 버킷**: 누구나 / **private 버킷**: 소유자와 `service_role` 만 |
+| 덮어쓰기·삭제 | 소유자, `service_role` |
+| 목록 | 로그인한 사용자는 **자기 파일만**, `service_role` 은 전부. anon 은 403 |
+
+권한이 없는 파일은 403 이 아니라 **404** 입니다 (존재 여부를 알려주지 않기 위해).
+
+### API
+
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| `POST` `GET` | `/storage/buckets` | 생성 `{name, public?, file_size_limit?, allowed_mime_types?}` / 목록 |
+| `GET` `PATCH` `DELETE` | `/storage/buckets/:name` | 파일이 있는 버킷은 `?force=true` 여야 삭제 (파일 바이트도 함께 삭제) |
+| `POST` | `/storage/object/:bucket/<경로>` | 업로드. **본문 = 파일 원본 바이트**, `Content-Type` = 파일 타입. 이미 있으면 409, `x-upsert: true` 면 소유자가 교체 |
+| `GET` | `/storage/object/:bucket/<경로>` | 다운로드 (`apikey` 필요, 로그인 사용자는 `Authorization` 도). `?download` 면 강제 다운로드 |
+| `DELETE` | `/storage/object/:bucket/<경로>` | 삭제 |
+| `POST` | `/storage/list/:bucket` | `{prefix?, search?, limit?, offset?, sort_by?: path\|created_at\|size, descending?}` |
+| `GET` | `/storage/public/<프로젝트id>/<버킷>/<경로>` | **apikey 없이** public 버킷 파일 다운로드 (`<img src>` 용). 프로젝트 id 는 URL 에 포함 |
+
+```bash
+curl -X POST "$B/storage/buckets" -H "apikey: $SERVICE" -H "Content-Type: application/json" -d '{"name":"avatars","public":true,"allowed_mime_types":["image/*"],"file_size_limit":2097152}'
+curl -X POST "$B/storage/object/avatars/me/photo.png" -H "apikey: $ANON" -H "Authorization: Bearer $ACCESS" -H "Content-Type: image/png" --data-binary @photo.png
+# 브라우저에서: <img src="http://localhost:8787/storage/public/<프로젝트id>/avatars/me/photo.png">
+```
+
+### 제한과 방어
+
+- **크기**: 버킷의 `file_size_limit` 과 서버의 `MAX_UPLOAD_BYTES`(기본 50 MiB) 중 작은 값. `Content-Length` 가 있으면 본문을 읽기 전에 413,
+  없으면(청크 전송) **스트리밍 중에** 초과 시 중단하고 임시 파일을 지웁니다.
+- **쿼터**: 로그인 사용자 1명당 `STORAGE_USER_QUOTA_BYTES`(100 MiB), 프로젝트 전체 `STORAGE_PROJECT_QUOTA_BYTES`(2 GiB). 쿼터가 없으면 가입만 하면 누구나 디스크를 채울 수 있습니다. `service_role` 은 면제. 업로드는 사용자당 10분에 60회로 제한.
+- **타입**: 버킷의 `allowed_mime_types`(`image/*` 와일드카드 가능)와 대조(415). PNG/JPEG/GIF/WebP/PDF 는 **파일 시그니처도 확인**해서 HTML 을 `image/png` 로 올리는 것을 막습니다. 그 외 타입은 클라이언트가 선언한 값을 신뢰합니다.
+- **XSS 방어**: 모든 응답에 `X-Content-Type-Options: nosniff` + `Content-Security-Policy: default-src 'none'; sandbox`. 브라우저가 안전하게 그릴 수 있는 타입(래스터 이미지, 오디오/비디오, PDF, text/plain)만 `inline` 이고, HTML·SVG·XML 등은 **항상 다운로드**로 내려갑니다.
+- 업로드 본문은 JSON 용 1 MiB 제한(`MAX_JSON_BYTES`)을 받지 않습니다. 스트리밍 + 위 파일 크기 제한이 적용됩니다.
+- 다운로드는 `ETag`(교체하면 바뀜)·`If-None-Match`(304)·`Range`(206, 오디오/비디오 탐색용)를 지원합니다. public 은 `Cache-Control: public, max-age=60`, private 은 `no-store`.
+- 공개 URL 에서만 `Cross-Origin-Resource-Policy: cross-origin` (다른 사이트의 `<img>` 허용). 다른 응답은 `same-origin`.
+
+**알려진 한계**: 서명된 임시 URL(private 파일을 `<img>` 로 쓰려면 아직 `fetch` + blob 필요), 폴더 개념/이동/복사, 이미지 리사이즈, 업로드 재개(resumable)는 없습니다.
+`x-upsert` 로 덮어쓸 때 새 파일을 먼저 완전히 저장한 뒤 교체하므로 중간에 실패해도 기존 파일이 유지됩니다.
 
 ### 오류 형식
 

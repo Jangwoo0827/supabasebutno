@@ -89,4 +89,33 @@ export const projectMigrations: Migration[] = [
       );
     `,
   },
+  {
+    version: 4,
+    name: 'create_storage',
+    sql: `
+      CREATE TABLE _storage_buckets (
+        name               TEXT PRIMARY KEY,
+        public             INTEGER NOT NULL DEFAULT 0,
+        file_size_limit    INTEGER,
+        allowed_mime_types TEXT,
+        created_at         TEXT NOT NULL,
+        updated_at         TEXT NOT NULL
+      );
+
+      -- File bytes live in the storage backend under the object's random id, never under the
+      -- user-chosen path, so a hostile path cannot reach the filesystem.
+      CREATE TABLE _storage_objects (
+        id         TEXT PRIMARY KEY,
+        bucket     TEXT NOT NULL REFERENCES _storage_buckets(name) ON DELETE CASCADE,
+        path       TEXT NOT NULL,
+        size       INTEGER NOT NULL,
+        mime_type  TEXT NOT NULL,
+        owner_id   TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (bucket, path)
+      );
+      CREATE INDEX _storage_objects_owner ON _storage_objects (owner_id);
+    `,
+  },
 ];

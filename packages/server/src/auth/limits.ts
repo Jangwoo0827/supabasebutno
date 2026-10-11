@@ -21,6 +21,7 @@ export function createLimits(now: () => number = Date.now) {
     recoverIp: new RateLimiter(5, HOUR, now), // attempts
     recoverAccount: new RateLimiter(3, HOUR, now), // attempts
     adminFailIp: new RateLimiter(10, 15 * MIN, now), // failures
+    uploadUser: new RateLimiter(60, 10 * MIN, now), // attempts: bounds disk churn from one signed-in user
   };
 }
 

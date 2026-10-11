@@ -5,6 +5,7 @@ import type { ProjectRegistry, ProjectRecord } from '../db/registry.js';
 import type { ApiKeyRole } from '../keys.js';
 import type { PolicyStore } from '../policy/store.js';
 import type { SchemaCache } from '../schema/cache.js';
+import type { StorageService } from '../storage/service.js';
 
 export interface Deps {
   config: Config;
@@ -13,6 +14,7 @@ export interface Deps {
   schemas: SchemaCache;
   /** Per-table access policies (compiled, cached). */
   policies: PolicyStore;
+  storage: StorageService;
   mailer: Mailer;
   limits: Limits;
   /** Current time in ms (injectable for tests). */
