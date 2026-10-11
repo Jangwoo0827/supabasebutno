@@ -185,6 +185,11 @@ export class RealtimeHub {
     return this.queue;
   }
 
+  /** Cuts every connection abruptly (no close frame), as a network failure would. Used by tests of client reconnection. */
+  dropAllConnections(): void {
+    for (const conn of this.conns) conn.ws.terminate();
+  }
+
   stats() {
     let subscriptions = 0;
     for (const c of this.conns) subscriptions += c.subs.size;

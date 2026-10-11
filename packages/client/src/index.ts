@@ -1,0 +1,10 @@
+export { createClient, SupabaseButNoClient } from './client.js';
+export { SbbError } from './errors.js';
+export type { Result } from './errors.js';
+export { createChromeStorage, memoryStorage, browserStorage } from './session-storage.js';
+export type { ChromeStorageArea } from './session-storage.js';
+export type { AuthChangeEvent, AuthOptions, ClientOptions, RealtimeOptions, Row, Session, StorageAdapter, User } from './types.js';
+export type { QueryBuilder, QueryResult, TableClient } from './query.js';
+export type { AuthClient } from './auth.js';
+export type { Bucket, BucketClient, BucketOptions, FileObject, ListOptions, StorageClient, UploadBody } from './storage.js';
+export type { ChangeEvent, ChangeFilter, ChangePayload, RealtimeChannel, RealtimeStatus } from './realtime.js';

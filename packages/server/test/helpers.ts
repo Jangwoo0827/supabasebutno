@@ -50,6 +50,11 @@ export async function makeTestApp(overrides: Partial<Config> = {}, appOverrides:
   });
 
   const servers: Server[] = [];
+  /** Abruptly cuts every open connection (HTTP and WebSocket) without stopping the servers, like a network failure. */
+  const dropConnections = () => {
+    servers.forEach((s) => s.closeAllConnections());
+    realtime.dropAllConnections(); // upgraded WebSocket sockets are not covered by closeAllConnections()
+  };
   /** Starts a real HTTP server (with the WebSocket endpoint) on a free port, for tests that need sockets. */
   async function listen() {
     const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 }) as Server;
@@ -91,6 +96,7 @@ export async function makeTestApp(overrides: Partial<Config> = {}, appOverrides:
     clock,
     realtime,
     listen,
+    dropConnections,
     call,
     admin,
     async createProject(name = 'demo') {

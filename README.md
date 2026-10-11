@@ -3,8 +3,8 @@
 Supabase의 핵심 기능 중 실제로 쓰는 것만 가볍게 구현한 **셀프호스팅 멀티 프로젝트 BaaS**입니다.
 Node.js + TypeScript, [Hono](https://hono.dev), SQLite(better-sqlite3).
 
-> **진행 상황** — 완료: 프로젝트 · API 키 · 테이블 DDL(1a), REST CRUD(1b), 사용자 인증(2), 접근 제어 정책(3), 파일 스토리지(4), 실시간(5).
-> 아직 없음: SDK(6), 대시보드(7), Docker·백업 스크립트.
+> **진행 상황** — 완료: 프로젝트 · API 키 · 테이블 DDL(1a), REST CRUD(1b), 사용자 인증(2), 접근 제어 정책(3), 파일 스토리지(4), 실시간(5), 클라이언트 SDK(6).
+> 아직 없음: 대시보드(7), Docker·백업 스크립트.
 
 ## 요구사항
 
@@ -363,6 +363,105 @@ ws.onmessage = (e) => {
 - 메시지 전달은 **최대 한 번**입니다. 연결이 끊긴 동안의 이벤트는 재전송되지 않으므로, 재연결하면 REST 로 현재 상태를 다시 읽으세요.
 - 단일 프로세스 전용입니다 (이벤트 버스가 메모리). 서버를 여러 대로 늘리면 다른 인스턴스의 변경을 받지 못합니다.
 - 구독자가 있는 테이블에 쓸 때만 변경 전 행 조회 같은 추가 작업이 생깁니다. 구독자가 없으면 쓰기 성능은 그대로입니다.
+
+## 클라이언트 SDK (Phase 6)
+
+`packages/client` — supabase-js 와 비슷하게 쓰는 JS/TS SDK. **의존성 0**, 브라우저 · Node 22+ · 브라우저 확장 프로그램에서 동작합니다.
+
+| 쓰는 곳 | 방법 |
+|---|---|
+| 일반 웹페이지 (`<script>` 한 줄, ES 모듈 없는 게임 포함) | `packages/client/dist/index.global.min.js` (23 KB) 를 복사해 `<script src>` → 전역 `supabasebutno` |
+| 번들러 · Node (ESM / CJS) | `import { createClient } from '@supabasebutno/client'` (워크스페이스) 또는 `dist/index.js` / `dist/index.cjs` |
+| 브라우저 확장 (MV2/MV3) | `createChromeStorage()` 로 세션을 `chrome.storage` 에 저장 (아래) |
+
+빌드: `npm run build -w @supabasebutno/client` → `dist/` (`index.js` `index.cjs` `index.global.js` `index.global.min.js` `types/`)
+
+```html
+<script src="supabasebutno.min.js"></script>
+<script>
+  const client = supabasebutno.createClient('https://api.example.com', 'ANON_KEY');
+  client.from('scores').select('player,time_ms').order('time_ms').limit(10).then(({ data, error }) => { /* ... */ });
+</script>
+```
+
+```ts
+import { createClient } from '@supabasebutno/client';
+const client = createClient(url, anonKey);
+
+// 데이터 — 서버가 던지지 않고 항상 { data, error } 를 돌려줍니다
+await client.from('todos').select('id,title').eq('done', false).order('id', { ascending: false }).range(0, 9);
+await client.from('todos').insert({ title: 'milk' }).select();          // .select() 를 붙여야 저장된 행이 돌아옴
+await client.from('todos').update({ done: true }).eq('id', 1);
+await client.from('todos').upsert({ id: 1, title: 'x' });               // { onConflict: 'email' } 도 가능
+await client.from('todos').delete().in('id', [1, 2]);
+await client.from('todos').select().eq('id', 1).single();                // 정확히 한 행이 아니면 error.code === 'not_single'
+
+// 인증 — 세션은 자동 저장·갱신됩니다
+await client.auth.signUp({ email, password, data: { name: 'Ada' } });
+await client.auth.signInWithPassword({ email, password });
+const { data: { session } } = await client.auth.getSession();
+client.auth.onAuthStateChange((event, session) => { /* INITIAL_SESSION | SIGNED_IN | SIGNED_OUT | TOKEN_REFRESHED | USER_UPDATED */ });
+await client.auth.signOut();                                              // { scope: 'global' } 면 모든 기기
+
+// 스토리지
+await client.storage.from('avatars').upload('me/photo.png', fileOrBlob, { upsert: true });
+const { data: { publicUrl } } = client.storage.from('avatars').getPublicUrl('me/photo.png');  // <img src> 용
+const { data: blob } = await client.storage.from('avatars').download('me/photo.png');
+
+// 실시간
+const channel = client.channel('board')
+  .on('postgres_changes', { event: 'INSERT', table: 'scores', filter: 'mode=eq.rush' }, (p) => console.log(p.new))
+  .subscribe((status) => { if (status === 'SUBSCRIBED') reloadScores(); });
+await channel.unsubscribe();
+client.dispose();   // 타이머와 연결 정리
+```
+
+**에러**: 모든 호출은 `{ data, error }` 를 돌려주고 예상 가능한 실패로는 던지지 않습니다. `error` 는 `SbbError` 이고 `code`(`forbidden` `unique_violation` `invalid_credentials` …, 서버와 같은 코드), `status`(HTTP, 네트워크 실패는 `0` + `network_error`), `requestId` 를 가집니다.
+쿼리 빌더는 잘못된 인자(`.eq('a', null)` 등)도 호출 시점이 아니라 `await` 결과의 `error` 로 알려줍니다.
+
+**옵션** (`createClient(url, key, options)`)
+
+| 옵션 | 기본값 | 설명 |
+|---|---|---|
+| `auth.storage` | `localStorage`, 없으면 메모리 | 세션 저장소 `{getItem,setItem,removeItem}` (동기·비동기 모두 가능) |
+| `auth.storageKey` | `sbb.auth.<프로젝트id>` | |
+| `auth.persistSession` | `true` | `false` 면 페이지를 닫으면 로그아웃 |
+| `auth.autoRefreshToken` | `true` | 만료 직전에 백그라운드로 갱신 (실시간처럼 요청이 없는 경우에 필요) |
+| `auth.refreshMarginSeconds` | `60` | 만료 몇 초 전에 갱신할지 |
+| `realtime.WebSocket` | 전역 `WebSocket` | 전역이 없는 환경(Node 22 미만)에서는 `ws` 패키지를 넘기세요 |
+| `realtime.reconnectDelayMs` / `maxReconnectDelayMs` / `heartbeatMs` | `1000` / `30000` / `25000` | |
+| `fetch` | 전역 `fetch` | |
+
+**브라우저 확장 프로그램**
+
+```js
+import { createClient, createChromeStorage } from '@supabasebutno/client';
+const client = createClient(URL, ANON_KEY, { auth: { storage: createChromeStorage() } });   // manifest 에 "storage" 권한 필요
+```
+`chrome.storage.local`(Firefox 는 `browser.storage.local`)에 저장하며 콜백/프로미스 방식 모두 지원합니다. 브라우저를 닫으면 지우려면 `createChromeStorage(chrome.storage.session)`.
+서비스 워커(MV3)는 수시로 종료되므로 세션이 저장소에서 복원됩니다 — 새로 만든 클라이언트가 같은 저장소를 쓰면 로그인 상태가 이어집니다.
+
+**세션 관리가 하는 일**
+
+- 요청 직전에 만료가 임박했으면 갱신하고, 동시에 여러 요청이 와도 **갱신은 한 번만** 합니다.
+- 서버가 `token_expired` 라고 하면(기기 시계가 틀린 경우 등) 갱신 후 **한 번 재시도**합니다. 스트림 본문은 재전송할 수 없으므로 세션만 갱신하고 에러를 돌려줍니다.
+- 네트워크가 끊겨서 갱신에 실패하면 세션은 **유지**하고 나중에 다시 시도합니다. 서버가 refresh token 을 거부하면(다른 기기에서 로그아웃 등) 로컬 세션을 지우고 `SIGNED_OUT` 을 알립니다.
+- 같은 브라우저의 다른 탭에서 로그인/로그아웃/갱신하면 `storage` 이벤트로 따라갑니다.
+- 실시간 연결은 로그인·로그아웃·토큰 갱신 때 새 자격 증명을 서버에 다시 보내고, 끊기면 지수 백오프로 재연결해 구독을 복원합니다 (`SUBSCRIBED` 가 다시 옵니다 — 끊긴 동안의 이벤트는 오지 않으니 그때 현재 상태를 다시 읽으세요).
+
+**supabase-js 와 다른 점**
+
+- `like`/`ilike` 의 `_` 는 **문자 그대로** 입니다 (Postgres 처럼 한 글자 와일드카드가 아님). `%` 와 `*` 가 와일드카드입니다. SQLite 이므로 `like` 는 ASCII 만 대소문자를 구분하지 않습니다.
+- `or()`, 조인(`select('*, other(*)')`), `rpc()`, presence/broadcast 는 없습니다.
+- `update()`/`delete()` 는 필터가 필수이고, **`limit()`/`range()`/`order()` 를 붙이면 요청을 보내지 않고 에러**(`unsupported_modifier`)를 돌려줍니다 — 조용히 무시하면 "한 행 수정"이 "일치하는 전부 수정"으로 바뀌기 때문입니다.
+- `insert`/`update`/`delete` 는 기본적으로 행을 돌려주지 않습니다 (`.select()` 를 붙이면 돌려줌). supabase-js 와 같습니다.
+- 채널은 `postgres_changes` 만 지원합니다. 페이로드는 supabase-js 와 같은 모양(`eventType`, `new`, `old`)입니다.
+
+**보안 주의**
+
+- **`service_role` 키는 브라우저/확장 프로그램/게임 클라이언트에 넣지 마세요.** 모든 정책을 우회합니다. 클라이언트에는 `anon` 키만 쓰고, 접근 제어는 [정책](#접근-제어--정책-phase-3)으로 하세요.
+- 세션(토큰)을 `localStorage` 에 저장하므로 사이트에 XSS 가 있으면 토큰이 유출될 수 있습니다. 사용자 입력은 항상 이스케이프하고, 민감한 앱은 `persistSession: false` 를 고려하세요.
+- 클라이언트가 보낸 값(리더보드 점수 등)은 위조할 수 있습니다. 정책의 `check` 로 터무니없는 값만 걸러낼 수 있습니다.
 
 ### 오류 형식
 
