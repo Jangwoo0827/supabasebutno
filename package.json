@@ -20,6 +20,7 @@
     "backup": "npm run backup -w @supabasebutno/server --",
     "restore": "npm run restore -w @supabasebutno/server --",
     "test": "npm run test --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "tunnel": "ngrok http 8787 --traffic-policy-file deploy/ngrok-policy.yml"
   }
 }

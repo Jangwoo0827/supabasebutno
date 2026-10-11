@@ -1,0 +1,9 @@
+# Used by `npm run tunnel`: expose the API to the internet but NOT the admin API / dashboard.
+on_http_request:
+  - name: block-admin
+    expressions:
+      - "req.url.path.startsWith('/admin') || req.url.path.startsWith('/dashboard')"
+    actions:
+      - type: deny
+        config:
+          status_code: 404
