@@ -1,0 +1,54 @@
+# Run:     docker compose up -d --build
+# Logs:    docker compose logs -f
+# Backup:  docker compose run --rm backup          (writes into ./backups)
+# Restore: docker compose stop sbb && docker compose run --rm restore /backups/backup-<time> --force && docker compose start sbb
+#
+# Put a TLS reverse proxy in front for anything beyond localhost (see deploy/Caddyfile.example) and set TRUST_PROXY_HOPS=1.
+services:
+  sbb:
+    build: .
+    image: supabasebutno:local
+    restart: unless-stopped
+    env_file: .env # ADMIN_TOKEN, JWT_MASTER_SECRET, CORS_ORIGINS, ...
+    environment:
+      HOST: 0.0.0.0
+      DATA_DIR: /data
+    ports:
+      - "127.0.0.1:8787:8787" # published on this machine only; a reverse proxy exposes it to the world
+    volumes:
+      - sbb-data:/data
+    read_only: true # the app writes only to /data
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+  backup:
+    profiles: [tools]
+    image: supabasebutno:local
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    # The container runs as the unprivileged "node" user, so ./backups must be writable by uid 1000.
+    command: ["node", "packages/server/dist/cli/backup.js", "/backups"]
+    volumes:
+      - sbb-data:/data:ro
+      - ./backups:/backups
+    read_only: true
+    cap_drop: [ALL]
+
+  restore:
+    profiles: [tools]
+    image: supabasebutno:local
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    entrypoint: ["node", "packages/server/dist/cli/restore.js"]
+    volumes:
+      - sbb-data:/data
+      - ./backups:/backups:ro
+    cap_drop: [ALL]
+
+volumes:
+  sbb-data:

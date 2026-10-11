@@ -14,6 +14,8 @@ import { sqliteSchemaDriver } from './db/sqlite/schema.js';
 import { PolicyStore } from './policy/store.js';
 import { RealtimeHub, type HubOptions } from './realtime/hub.js';
 import { adminRoutes } from './http/admin-routes.js';
+import { AdminSessions } from './http/admin-session.js';
+import { dashboardRoutes } from './http/dashboard.js';
 import { apiKeyAuth } from './http/auth.js';
 import { onError, onNotFound } from './http/error-handler.js';
 import type { AppEnv, Deps } from './http/types.js';
@@ -54,6 +56,7 @@ export async function createApp(config: Config, overrides: AppOverrides = {}): P
     schemas,
     policies,
     realtime,
+    adminSessions: new AdminSessions(config.jwtMasterSecret, now),
     storage: new StorageService(backend, config, now),
     mailer: overrides.mailer ?? new ConsoleMailer(),
     limits: createLimits(now),
@@ -66,7 +69,8 @@ export async function createApp(config: Config, overrides: AppOverrides = {}): P
 
   app.use('*', requestId());
   // Cross-Origin-Resource-Policy is handled below: secureHeaders would overwrite a route's own value.
-  app.use('*', secureHeaders({ crossOriginResourcePolicy: false }));
+  // Nothing this server returns is meant to be framed, so DENY everywhere (the dashboard also sends frame-ancestors 'none').
+  app.use('*', secureHeaders({ crossOriginResourcePolicy: false, xFrameOptions: 'DENY' }));
   app.use('*', async (c, next) => {
     await next();
     // Responses are same-origin only by default; public file downloads opt in to being embedded elsewhere.
@@ -117,6 +121,7 @@ export async function createApp(config: Config, overrides: AppOverrides = {}): P
   app.route('/storage', storageRoutes(deps, { prefixSegments: 1 }));
 
   app.route('/admin', adminRoutes(deps));
+  app.route('/dashboard', dashboardRoutes());
 
   return { app, registry, realtime };
 }

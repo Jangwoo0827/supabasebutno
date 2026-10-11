@@ -3,6 +3,7 @@ import type { Limits } from '../auth/limits.js';
 import type { Config } from '../config.js';
 import type { ProjectRegistry, ProjectRecord } from '../db/registry.js';
 import type { ApiKeyRole } from '../keys.js';
+import type { AdminSessions } from './admin-session.js';
 import type { PolicyStore } from '../policy/store.js';
 import type { RealtimeHub } from '../realtime/hub.js';
 import type { SchemaCache } from '../schema/cache.js';
@@ -18,6 +19,8 @@ export interface Deps {
   storage: StorageService;
   /** Broadcasts committed row changes to WebSocket subscribers. */
   realtime: RealtimeHub;
+  /** Login sessions of the admin dashboard. */
+  adminSessions: AdminSessions;
   mailer: Mailer;
   limits: Limits;
   /** Current time in ms (injectable for tests). */

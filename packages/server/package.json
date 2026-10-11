@@ -8,6 +8,8 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
+    "backup": "node dist/cli/backup.js",
+    "restore": "node dist/cli/restore.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

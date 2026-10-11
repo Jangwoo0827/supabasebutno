@@ -1,0 +1,25 @@
+# TLS + HTTP/2 + WebSocket in four lines, with automatic Let's Encrypt certificates.
+# Replace the host name, point its DNS at this machine, and run:  caddy run --config Caddyfile
+#
+# With this proxy in front set TRUST_PROXY_HOPS=1 in .env (so rate limits see the real client IP)
+# and CORS_ORIGINS to the sites that will call the API (e.g. https://jangwoo0827.github.io).
+api.example.com {
+	encode zstd gzip
+
+	# Keep the admin dashboard and /admin API off the public internet if you can:
+	# only allow your own address(es).
+	@admin path /admin* /dashboard*
+	handle @admin {
+		@notMine not remote_ip 203.0.113.10
+		respond @notMine 404
+		reverse_proxy 127.0.0.1:8787
+	}
+
+	# Everything else, including the /realtime WebSocket (Caddy upgrades it automatically).
+	reverse_proxy 127.0.0.1:8787 {
+		# generous timeout so idle WebSocket connections are not cut (the app pings every 15 s)
+		transport http {
+			read_timeout 5m
+		}
+	}
+}

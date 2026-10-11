@@ -3,8 +3,8 @@
 Supabase의 핵심 기능 중 실제로 쓰는 것만 가볍게 구현한 **셀프호스팅 멀티 프로젝트 BaaS**입니다.
 Node.js + TypeScript, [Hono](https://hono.dev), SQLite(better-sqlite3).
 
-> **진행 상황** — 완료: 프로젝트 · API 키 · 테이블 DDL(1a), REST CRUD(1b), 사용자 인증(2), 접근 제어 정책(3), 파일 스토리지(4), 실시간(5), 클라이언트 SDK(6).
-> 아직 없음: 대시보드(7), Docker·백업 스크립트.
+> **기능**: 멀티 프로젝트 · 테이블 관리 · REST CRUD · 이메일 로그인 · 행 단위 접근 정책 · 파일 스토리지 · 실시간(WebSocket) · JS SDK · 관리자 대시보드 · 백업/복원 · Docker.
+> 각 기능의 설계와 **한계/경고**는 아래 장마다 적혀 있습니다. 운영 전에는 [프로덕션 체크리스트](#프로덕션-체크리스트)를 꼭 읽으세요.
 
 ## 요구사항
 
@@ -25,14 +25,25 @@ npm run dev
 node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 ```
 
-서버는 기본적으로 `http://127.0.0.1:8787` 에서 뜹니다.
+서버는 기본적으로 `http://127.0.0.1:8787` 에서 뜹니다. **관리자 대시보드는 `http://127.0.0.1:8787/dashboard/`** 입니다 (`ADMIN_TOKEN` 으로 로그인).
 
 | 스크립트 | 설명 |
 |---|---|
-| `npm run dev` | tsx watch 로 개발 서버 실행 |
-| `npm run build` / `npm start` | `dist/` 로 빌드 후 실행 |
-| `npm test` | vitest (DB 드라이버, 스키마, 키, 관리자 API 통합 테스트) |
+| `npm run dev` | tsx watch 로 개발 서버 실행 (대시보드 파일은 시작할 때 읽으므로 고치면 서버를 다시 시작하세요) |
+| `npm run build` / `npm start` | `dist/` 로 빌드 후 실행 (SDK 번들 포함) |
+| `npm test` | 서버 + SDK 전체 테스트 (실제 서버를 띄워서 실행) |
 | `npm run typecheck` | `tsc --noEmit` |
+| `npm run backup -- <폴더>` / `npm run restore -- <백업폴더>` | [백업·복원](#백업과-복원) (먼저 `npm run build`) |
+
+## 관리자 대시보드 (Phase 7)
+
+`/dashboard/` — 프로젝트 목록·생성·삭제, **API 키 확인·재발급**, 테이블 편집기(생성·컬럼 추가/이름 변경/삭제·테이블 이름 변경/삭제), **데이터 편집기**(필터·페이지·행 추가/수정/삭제), 접근 정책 편집기(템플릿 + 서버 검증 오류 표시), 사용자 목록(삭제·강제 로그아웃), 파일(버킷 설정, 업로드·다운로드·삭제).
+
+- **로그인**: `ADMIN_TOKEN` 을 한 번 입력하면 서버가 8시간짜리 세션 쿠키를 줍니다. 쿠키는 `HttpOnly` · `SameSite=Strict` · `Path=/admin` (HTTPS 에서는 `Secure`)이고 토큰 자체는 브라우저에 남지 않습니다. 로그아웃하면 세션이 **서버에서도 폐기**되어 복사해 둔 쿠키도 못 씁니다. 로그인 실패는 IP 당 10회/15분으로 제한됩니다.
+- **CSRF 방어**: 쿠키로 인증된 요청 중 데이터를 바꾸는 것은 `X-SBB-CSRF` 헤더와 같은 Origin 이어야 통과합니다 (다른 사이트는 CORS 가 막혀 이 헤더를 못 붙임). Bearer 토큰으로 호출하는 스크립트(curl 등)는 영향이 없습니다.
+- **XSS 방어**: 화면은 `innerHTML` 없이 DOM API 로만 그리고(테스트가 소스를 검사함), CSP 는 `script-src 'self'; style-src 'self'; default-src 'none'; frame-ancestors 'none'` 입니다. 테이블 셀이나 프로젝트 이름에 `<script>` 가 들어 있어도 글자로만 표시됩니다.
+- 데이터 편집기와 파일 화면은 `service_role` 권한으로 동작해서 **접근 정책을 우회**합니다 (관리자 도구이므로).
+- 외부 접근을 막고 싶다면 리버스 프록시에서 `/admin*`, `/dashboard*` 를 내 IP 에만 열어 두세요 ([deploy/Caddyfile.example](deploy/Caddyfile.example)).
 
 ## 환경변수
 
@@ -59,8 +70,10 @@ data/
 ├─ admin.sqlite                    # 프로젝트 목록 (control plane)
 └─ projects/<id>/
    ├─ db.sqlite                    # 프로젝트 전용 DB (사용자 테이블 + 예약된 _테이블)
-   └─ storage/                     # (Phase 4)
+   └─ storage/<파일 uuid>          # 업로드한 파일 (이름은 랜덤 uuid, 사용자가 정한 경로는 DB 의 이름표)
 ```
+
+소스 구조: `packages/server`(API 서버) · `packages/client`(SDK) · `packages/dashboard/public`(대시보드 정적 파일).
 
 - 프로젝트마다 **DB 파일, 스토리지, API 키 서명 시크릿이 완전히 분리**됩니다.
 - API 키는 Supabase 처럼 JWT(`role: anon | service_role`, `ref: <projectId>`)이고, 서명 시크릿은
@@ -484,11 +497,57 @@ const client = createClient(URL, ANON_KEY, { auth: { storage: createChromeStorag
 ## 알려진 제한 (Phase 2)
 
 - **이메일 인증이 없습니다.** 가입 즉시 로그인되고, 이메일 소유 확인을 하지 않습니다. 가입 시 이메일 존재 여부가 409 로 드러납니다 (확인 메일 없이는 숨길 방법이 없음).
-- 이메일 주소 변경, 계정 자기 삭제 API 는 없습니다 (관리자 API 로 삭제 — Phase 7).
+- 이메일 주소 변경, 계정 자기 삭제 API 는 없습니다 (대시보드의 사용자 탭 / 관리자 API 로 삭제).
 - Rate limit 은 메모리 기반이라 **서버 재시작 시 초기화**되고 여러 인스턴스 간에 공유되지 않습니다.
 - Access token 은 서명·만료를 검증한 뒤 세션 폐기 여부를 DB 에서 한 번 더 확인합니다 (요청당 조회 1회). 완전한 무상태 JWT 는 아닙니다.
 - `user_metadata` 는 사용자가 직접 수정할 수 있으므로 **권한 판단에 쓰면 안 됩니다** (4KB 제한).
 - 재설정 메일이 콘솔에 찍히므로 로그를 볼 수 있는 사람은 복구 중인 계정을 탈취할 수 있습니다. 운영에서는 `Mailer` 를 교체하세요.
+
+## 백업과 복원
+
+```bash
+npm run build
+npm run backup -- ./backups                         # ./backups/backup-<UTC 시각>/ 생성 (서버가 켜져 있어도 됨)
+npm run restore -- ./backups/backup-20261011-131153 --verify   # 검사만: 체크섬 + SQLite 무결성
+# 복원 (서버를 먼저 끄세요)
+npm run restore -- ./backups/backup-20261011-131153 --force    # --force: 기존 데이터는 지우지 않고 옆으로 옮김
+```
+
+- SQLite **온라인 백업 API** 로 DB 를 복사하므로 서버가 쓰는 도중에도 일관된 스냅샷이 만들어집니다. 업로드 파일은 복사하되 업로드 중인 임시 파일은 건너뜁니다.
+- 백업 폴더: `admin.sqlite`, `projects/<id>/db.sqlite`, `projects/<id>/storage/*`, `manifest.json`(프로젝트 목록 + **DB 파일의 SHA-256**).
+- 복원은 먼저 **모든 DB 를 체크섬과 `PRAGMA integrity_check` 로 검증**하고, 새 데이터를 `<DATA_DIR>.restoring` 에 완성한 뒤 `rename` 으로 교체합니다. 중간에 실패해도 기존 데이터는 그대로입니다. 데이터가 이미 있으면 `--force` 가 필요하고, 그때도 **삭제하지 않고** `<DATA_DIR>.before-restore-<시각>` 으로 옮겨 둡니다. 위조된 manifest(경로 이탈 이름)는 거부합니다.
+- **백업에 들어 있지 않은 것: `JWT_MASTER_SECRET`, `ADMIN_TOKEN`.** 마스터 시크릿을 잃으면 복원해도 발급했던 API 키가 전부 달라집니다 (키는 마스터 시크릿에서 파생됨). `.env` 를 비밀번호 관리자 등에 따로 보관하세요.
+- 백업에는 **비밀번호 해시와 사용자 데이터**가 들어 있습니다. 민감한 파일로 취급하고 (암호화된 위치에 보관) 저장소에 올리지 마세요.
+- 정기 백업은 cron / 작업 스케줄러에 `npm run backup -- <폴더>` 를 걸고, 오래된 `backup-*` 폴더를 정리하세요 (자동 보존 정책은 없습니다). **복원 연습을 한 번은 해 보세요.**
+
+## 배포 (Docker)
+
+```bash
+cp .env.example .env            # ADMIN_TOKEN, JWT_MASTER_SECRET 채우기. CORS_ORIGINS 는 호출할 사이트만
+docker compose up -d --build    # 127.0.0.1:8787 에서만 열림
+docker compose logs -f
+docker compose --profile tools run --rm backup        # ./backups 에 백업 (이 폴더는 uid 1000 이 쓸 수 있어야 함)
+docker compose stop sbb && docker compose --profile tools run --rm restore /backups/backup-<시각> --force && docker compose start sbb
+```
+
+- 이미지: `node:22-bookworm-slim` 기반 멀티 스테이지. 런타임에는 **운영 의존성만** 설치하고(컴파일러 없음), 비루트 `node` 사용자로 실행합니다. 데이터는 `/data` 볼륨입니다. 컨테이너는 읽기 전용 파일시스템 + `cap_drop: ALL` + `no-new-privileges` 로 돌립니다.
+- Alpine 이 아니라 Debian 인 이유: `better-sqlite3`, `argon2` 가 glibc 용 미리 빌드된 바이너리(x64, arm64)를 패키지에 담아 배포하기 때문입니다. `npm ci --ignore-scripts` 로 컴파일을 시도하지 않게 했습니다.
+- 헬스체크는 `GET /health`. `docker stop` 의 SIGTERM 에서 연결을 닫고 DB 를 정리한 뒤 종료합니다.
+- **TLS 는 직접 처리하지 않습니다.** 인터넷에 열려면 Caddy/nginx/Cloudflare Tunnel 등을 앞에 두세요. 예: [deploy/Caddyfile.example](deploy/Caddyfile.example) (자동 HTTPS, WebSocket 통과). 프록시를 두면 `.env` 에 `TRUST_PROXY_HOPS=1` 을 설정해야 rate limit 이 실제 클라이언트 IP 를 봅니다.
+- 이 저장소의 Dockerfile 은 Docker 가 설치되지 않은 PC 에서 작성했습니다. 이미지를 직접 빌드해 본 것은 아니고, 같은 단계(운영 의존성만 설치 → 빌드 결과물로 서버·대시보드·백업 실행)를 임시 폴더에서 재현해 확인했습니다. 첫 빌드에서 문제가 있으면 이슈로 알려 주세요.
+
+## 프로덕션 체크리스트
+
+1. `ADMIN_TOKEN` 과 `JWT_MASTER_SECRET` 은 각각 따로 만든 무작위 값(32바이트↑)이고 서로 다릅니다. `.env` 는 저장소에 올리지 않았고, 따로 백업했습니다.
+2. 앞단에 **HTTPS** 리버스 프록시가 있고 `TRUST_PROXY_HOPS` 가 프록시 수와 같습니다. 서버 포트(8787)는 인터넷에 직접 열려 있지 않습니다.
+3. `CORS_ORIGINS` 는 `*` 가 아니라 실제로 호출하는 사이트 목록입니다.
+4. 모든 테이블에 **접근 정책**을 의도대로 설정했습니다. 정책이 없으면 `anon`/로그인 사용자는 거부되고 `service_role` 만 접근합니다. 공개 읽기(`where: true`)는 정말 공개해도 되는 테이블에만 쓰세요.
+5. 브라우저·앱·게임·확장 프로그램에는 **anon 키만** 넣었습니다. `service_role` 키는 서버에서만 쓰고 어디에도 커밋하지 않았습니다. 키가 유출되면 대시보드에서 "키 다시 발급".
+6. 비밀번호 재설정 메일을 보내려면 `Mailer` 를 실제 구현으로 교체했습니다 (기본 `ConsoleMailer` 는 토큰을 로그에 찍습니다).
+7. `/admin`, `/dashboard` 는 프록시에서 내 IP 로 제한했습니다 (가능하다면).
+8. 정기 백업이 돌고, **복원을 한 번 연습했습니다.**
+9. 디스크 여유와 업로드 한도(`MAX_UPLOAD_BYTES`, 쿼터)를 확인했습니다. SQLite 는 한 서버에서만 쓰세요 (여러 인스턴스 금지).
+10. 서버 로그에서 `unhandled error` 를 가끔 확인합니다 (`request_id` 로 클라이언트 오류와 연결).
 
 ## 라이선스
 

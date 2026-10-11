@@ -1,5 +1,7 @@
 import type { Context, MiddlewareHandler } from 'hono';
-import { notFound, tooManyRequests, unauthorized } from '../core/errors.js';
+import { deleteCookie, getCookie } from 'hono/cookie';
+import { AppError, notFound, tooManyRequests, unauthorized } from '../core/errors.js';
+import { ADMIN_COOKIE } from './admin-session.js';
 import { PROJECT_ID_RE } from '../core/ids.js';
 import { safeEqual } from '../core/safe-equal.js';
 import { clientIp } from './client-ip.js';
@@ -11,18 +13,53 @@ import type { AppEnv, Deps } from './types.js';
  * Failed attempts are counted per client IP; once over the limit even the correct
  * token is refused until the window passes.
  */
-export function requireAdmin({ config, limits }: Deps): MiddlewareHandler<AppEnv> {
+export function requireAdmin({ config, limits, adminSessions }: Deps): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
     const ip = clientIp(c, config.trustProxyHops);
     if (!limits.adminFailIp.allowed(ip)) throw tooManyRequests(limits.adminFailIp.retryAfterSeconds(ip));
 
-    const match = /^Bearer (.+)$/.exec(c.req.header('authorization') ?? '');
-    if (!match || !safeEqual(match[1]!, config.adminToken)) {
-      limits.adminFailIp.hit(ip);
-      throw unauthorized('invalid_admin_token', 'Missing or invalid admin token');
+    const bearer = /^Bearer (.+)$/.exec(c.req.header('authorization') ?? '')?.[1];
+    if (bearer) {
+      if (!safeEqual(bearer, config.adminToken)) {
+        limits.adminFailIp.hit(ip);
+        throw unauthorized('invalid_admin_token', 'Missing or invalid admin token');
+      }
+      return next();
     }
-    await next();
+
+    // Dashboard: a session cookie obtained by POST /admin/login. Browsers attach cookies to cross-site
+    // requests on their own, so unsafe methods must prove they come from our own pages.
+    const cookie = getCookie(c, ADMIN_COOKIE);
+    if (cookie) {
+      if (!(await adminSessions.verify(cookie))) {
+        deleteCookie(c, ADMIN_COOKIE, { path: '/admin' });
+        throw unauthorized('session_expired', 'The admin session has expired; log in again');
+      }
+      requireSameSiteRequest(c, config.trustProxyHops);
+      return next();
+    }
+    // No credentials at all (e.g. the dashboard's first load): not an attack, so it is not counted.
+    throw unauthorized('invalid_admin_token', 'Missing or invalid admin token');
   };
+}
+
+/** CSRF guard for cookie-authenticated requests that change things. */
+export function requireSameSiteRequest(c: Context<AppEnv>, trustProxyHops: number): void {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) return;
+  const forbiddenRequest = () => new AppError(403, 'csrf_rejected', 'This request does not look like it came from the dashboard');
+  // A custom header cannot be added by another site without a CORS preflight, which /admin never grants.
+  if (c.req.header('x-sbb-csrf') !== '1') throw forbiddenRequest();
+  const origin = c.req.header('origin');
+  if (origin) {
+    const host = (trustProxyHops > 0 && c.req.header('x-forwarded-host')) || c.req.header('host');
+    let originHost = '';
+    try {
+      originHost = new URL(origin).host;
+    } catch {
+      /* malformed Origin: rejected below */
+    }
+    if (!host || originHost !== host) throw forbiddenRequest();
+  }
 }
 
 export interface ApiKeyAuthOptions {

@@ -7,6 +7,11 @@ const DEFAULT_DATA_DIR = fileURLToPath(new URL('../../../data', import.meta.url)
 
 const MIB = 1024 * 1024;
 
+/** Where the data lives: DATA_DIR, or <repo>/data. Shared with the backup/restore commands, which need no secrets. */
+export function resolveDataDir(env: Record<string, string | undefined> = process.env): string {
+  return resolve(env.DATA_DIR || DEFAULT_DATA_DIR);
+}
+
 const envSchema = z
   .object({
     PORT: z.coerce.number().int().min(1).max(65535).default(8787),

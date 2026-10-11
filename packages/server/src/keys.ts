@@ -24,7 +24,7 @@ const ISSUER = 'supabasebutno';
 export function deriveSecret(
   masterSecret: string,
   projectId: string,
-  purpose: 'apikey' | 'user',
+  purpose: 'apikey' | 'user' | 'admin',
   version: number,
 ): Uint8Array {
   return new Uint8Array(hkdfSync('sha256', masterSecret, projectId, `supabasebutno:${purpose}:v${version}`, 32));
