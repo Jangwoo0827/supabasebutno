@@ -13,6 +13,7 @@ export const onError: ErrorHandler<AppEnv> = (err, c) => {
   const request_id = c.get('requestId');
 
   if (err instanceof AppError) {
+    for (const [name, value] of Object.entries(err.headers ?? {})) c.header(name, value);
     return c.json({ error: { code: err.code, message: err.message, details: err.details, request_id } }, err.status);
   }
   if (err instanceof ZodError) {

@@ -5,6 +5,9 @@ import { requestId } from 'hono/request-id';
 import { secureHeaders } from 'hono/secure-headers';
 import type { Config } from './config.js';
 import { AppError } from './core/errors.js';
+import { createLimits } from './auth/limits.js';
+import { ConsoleMailer, type Mailer } from './auth/mailer.js';
+import { authRoutes } from './auth/routes.js';
 import { ProjectRegistry } from './db/registry.js';
 import { sqliteSchemaDriver } from './db/sqlite/schema.js';
 import { adminRoutes } from './http/admin-routes.js';
@@ -19,9 +22,24 @@ export interface CreatedApp {
   registry: ProjectRegistry;
 }
 
-export async function createApp(config: Config): Promise<CreatedApp> {
+/** Replaceable collaborators (production defaults are used when omitted). */
+export interface AppOverrides {
+  mailer?: Mailer;
+  /** Current time in ms. */
+  now?: () => number;
+}
+
+export async function createApp(config: Config, overrides: AppOverrides = {}): Promise<CreatedApp> {
   const registry = await ProjectRegistry.open(config.dataDir);
-  const deps: Deps = { config, registry, schemas: new SchemaCache(sqliteSchemaDriver) };
+  const now = overrides.now ?? Date.now;
+  const deps: Deps = {
+    config,
+    registry,
+    schemas: new SchemaCache(sqliteSchemaDriver),
+    mailer: overrides.mailer ?? new ConsoleMailer(),
+    limits: createLimits(now),
+    now,
+  };
 
   const app = new Hono<AppEnv>();
   app.onError(onError);
@@ -58,8 +76,12 @@ export async function createApp(config: Config): Promise<CreatedApp> {
   // Lets a client verify its apikey and see which project/role it resolves to.
   app.get('/whoami', apiKeyAuth(deps), (c) => {
     const project = c.get('project');
-    return c.json({ project: { id: project.id, name: project.name }, role: c.get('role') });
+    const userId = c.get('userId');
+    return c.json({ project: { id: project.id, name: project.name }, role: c.get('role'), user: userId ? { id: userId } : null });
   });
+
+  app.use('/auth/*', apiKeyAuth(deps, { bearer: 'lenient' }));
+  app.route('/auth', authRoutes(deps));
 
   app.use('/rest/*', apiKeyAuth(deps));
   app.route('/rest', restRoutes(deps));

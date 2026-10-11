@@ -11,11 +11,18 @@ export class AppError extends Error {
     readonly code: string,
     message: string,
     readonly details?: unknown,
+    /** Extra response headers, e.g. Retry-After. */
+    readonly headers?: Record<string, string>,
   ) {
     super(message);
     this.name = 'AppError';
   }
 }
+
+export const tooManyRequests = (retryAfterSeconds: number) =>
+  new AppError(429, 'rate_limited', 'Too many attempts. Try again later.', undefined, {
+    'Retry-After': String(retryAfterSeconds),
+  });
 
 export const badRequest = (code: string, message: string, details?: unknown) =>
   new AppError(400, code, message, details);

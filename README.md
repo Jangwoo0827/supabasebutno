@@ -3,8 +3,8 @@
 Supabase의 핵심 기능 중 실제로 쓰는 것만 가볍게 구현한 **셀프호스팅 멀티 프로젝트 BaaS**입니다.
 Node.js + TypeScript, [Hono](https://hono.dev), SQLite(better-sqlite3).
 
-> **진행 상황** — Phase 1a 완료 (프로젝트 · API 키 · 테이블 DDL).
-> 아직 없음: REST CRUD(1b), 인증(2), 접근 제어(3), 스토리지(4), 실시간(5), SDK(6), 대시보드(7).
+> **진행 상황** — 완료: 프로젝트 · API 키 · 테이블 DDL(1a), REST CRUD(1b), 사용자 인증(2).
+> 아직 없음: 접근 제어(3), 스토리지(4), 실시간(5), SDK(6), 대시보드(7).
 
 ## 요구사항
 
@@ -168,6 +168,44 @@ curl -X DELETE "$B/rest/todos?id=eq.1" -H "$R"
 - 타입이 엄격합니다: `"1"` 을 integer 컬럼에, `1` 을 boolean 컬럼에 넣으면 400.
 - UNIQUE 위반 409 · NOT NULL 위반 400 으로 응답하고 DB 내부 메시지는 노출하지 않습니다.
 
+## 사용자 인증 API (Phase 2)
+
+프로젝트별로 완전히 분리된 이메일+비밀번호 인증입니다. 모든 요청에 `apikey` 헤더(anon 키)가 필요하고,
+로그인 후에는 `Authorization: Bearer <access_token>` 을 함께 보냅니다 (REST·스토리지에서 `authenticated` 역할이 됨).
+
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| `POST` | `/auth/signup` | `{email, password, data?}` → 세션 (201). 이미 있는 이메일은 409 |
+| `POST` | `/auth/login` | `{email, password}` → 세션 |
+| `POST` | `/auth/refresh` | `{refresh_token}` → 새 세션 (refresh token 회전) |
+| `POST` | `/auth/logout` | (Bearer) `{scope?: "local" \| "global"}` → 204. 기본은 현재 기기만 |
+| `GET` / `PUT` | `/auth/user` | (Bearer) 내 정보 / `{data?, password?, current_password?}` 수정 |
+| `POST` | `/auth/recover` | `{email}` → 항상 200. 재설정 토큰을 메일로 전송 |
+| `POST` | `/auth/reset` | `{token, password}` → 204. 모든 세션 로그아웃 |
+
+세션 응답: `{access_token, token_type, expires_in, expires_at, refresh_token, user}`
+
+```bash
+curl -X POST $B/auth/signup -H "apikey: $ANON" -H "Content-Type: application/json" \
+     -d '{"email":"me@example.com","password":"correct horse battery","data":{"name":"Me"}}'
+```
+
+**설계**
+
+- 비밀번호는 **argon2id**(OWASP 권장 파라미터). 8~128자, 별도 조합 규칙 없음.
+- **Access token** 은 15분짜리 JWT(HS256, 프로젝트별 시크릿)이고 `sid`(세션 id)를 담습니다. 서버는 **요청마다 세션이 폐기되지 않았는지 확인**하므로
+  로그아웃·비밀번호 변경·계정 삭제가 즉시 반영됩니다 (요청당 인덱스 조회 1회).
+- **Refresh token** 은 256비트 난수이고 DB 에는 SHA-256 해시만 저장됩니다. 사용할 때마다 **회전**하며,
+  이미 회전된 토큰을 10초 뒤에 다시 쓰면 탈취로 보고 **해당 세션 전체를 폐기**합니다 (두 탭이 동시에 갱신하는 경우를 위해 10초 유예).
+- 로그인은 **3중 rate limit**: IP(실패 30회/15분), 이메일+IP(실패 5회/15분), 이메일(실패 40회/15분). 성공하면 이메일 카운터는 초기화됩니다.
+  낯선 사람이 남의 계정을 잠가 버릴 수 없도록 "이메일+IP" 조합을 씁니다. 가입(IP당 10회/시간)·재설정 요청(IP당 5회, 계정당 3회/시간)·`/admin` 실패(IP당 10회/15분)도 제한됩니다. 초과 시 `429` + `Retry-After`.
+- 존재하지 않는 이메일로 로그인해도 같은 시간·같은 응답이 나옵니다 (더미 해시 검증). `/auth/recover` 는 등록 여부와 무관하게 항상 같은 응답입니다.
+- 비밀번호 재설정 메일은 `Mailer` 인터페이스([mailer.ts](packages/server/src/auth/mailer.ts))로 보냅니다. 지금은 **콘솔 출력**(`ConsoleMailer`)이 기본입니다.
+
+> **Rate limit 의 IP** — 기본값(`TRUST_PROXY_HOPS=0`)에서는 소켓 주소만 쓰고 `X-Forwarded-For` 는 무시합니다.
+> Caddy/nginx/cloudflared 같은 리버스 프록시 뒤에서 돌린다면 그 개수만큼 `TRUST_PROXY_HOPS` 를 설정하세요.
+> 프록시가 있는데 0 이면 모든 사용자가 하나의 IP 로 보이고, 프록시가 없는데 1 이상이면 클라이언트가 IP 를 위조할 수 있습니다.
+
 ### 오류 형식
 
 ```json
@@ -184,7 +222,16 @@ curl -X DELETE "$B/rest/todos?id=eq.1" -H "$R"
 - 컬럼 **타입 변경**, 외래 키, 인덱스 관리 API 는 없습니다.
 - 프로젝트 DB 핸들은 처음 쓸 때 열리고 계속 열려 있습니다 (수십 개 수준의 프로젝트 가정).
 - 임의 SQL 실행 엔드포인트는 **의도적으로** 없습니다.
-- 관리자 토큰 무차별 대입 방지(rate limit)는 Phase 2 에서 추가됩니다. 그때까지는 길고 무작위인 토큰(32자↑ 강제)과 네트워크 격리에 의존합니다.
+- `/admin` 은 실패한 토큰 시도가 IP 당 10회/15분을 넘으면 429 를 돌려주지만, 그래도 `ADMIN_TOKEN` 은 길고 무작위여야 합니다 (32자↑ 강제).
+
+## 알려진 제한 (Phase 2)
+
+- **이메일 인증이 없습니다.** 가입 즉시 로그인되고, 이메일 소유 확인을 하지 않습니다. 가입 시 이메일 존재 여부가 409 로 드러납니다 (확인 메일 없이는 숨길 방법이 없음).
+- 이메일 주소 변경, 계정 자기 삭제 API 는 없습니다 (관리자 API 로 삭제 — Phase 7).
+- Rate limit 은 메모리 기반이라 **서버 재시작 시 초기화**되고 여러 인스턴스 간에 공유되지 않습니다.
+- Access token 은 서명·만료를 검증한 뒤 세션 폐기 여부를 DB 에서 한 번 더 확인합니다 (요청당 조회 1회). 완전한 무상태 JWT 는 아닙니다.
+- `user_metadata` 는 사용자가 직접 수정할 수 있으므로 **권한 판단에 쓰면 안 됩니다** (4KB 제한).
+- 재설정 메일이 콘솔에 찍히므로 로그를 볼 수 있는 사람은 복구 중인 계정을 탈취할 수 있습니다. 운영에서는 `Mailer` 를 교체하세요.
 
 ## 라이선스
 

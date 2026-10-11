@@ -147,9 +147,9 @@ describe('API key resolution (/whoami)', () => {
     const a = await t.createProject('a');
     const b = await t.createProject('b');
     const anon = await t.call('GET', '/whoami', { headers: bearer(a.keys.anon) });
-    expect(anon.json).toEqual({ project: { id: a.id, name: 'a' }, role: 'anon' });
+    expect(anon.json).toEqual({ project: { id: a.id, name: 'a' }, role: 'anon', user: null });
     const svc = await t.call('GET', '/whoami', { headers: bearer(b.keys.service_role) });
-    expect(svc.json).toEqual({ project: { id: b.id, name: 'b' }, role: 'service_role' });
+    expect(svc.json).toEqual({ project: { id: b.id, name: 'b' }, role: 'service_role', user: null });
   });
 
   it('rejects missing and invalid keys, and does not read the key from the URL', async () => {

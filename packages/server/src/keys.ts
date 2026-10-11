@@ -18,12 +18,13 @@ const ISSUER = 'supabasebutno';
  * info = purpose + key version). Nothing secret is stored in the database, and
  * a key signed for project A can never validate for project B.
  *
- * `purpose` keeps API keys and (Phase 2) user session tokens in separate key domains.
+ * `purpose` keeps API keys and user session tokens in separate key domains, so a
+ * token of one kind can never validate as the other.
  */
 export function deriveSecret(
   masterSecret: string,
   projectId: string,
-  purpose: 'apikey',
+  purpose: 'apikey' | 'user',
   version: number,
 ): Uint8Array {
   return new Uint8Array(hkdfSync('sha256', masterSecret, projectId, `supabasebutno:${purpose}:v${version}`, 32));

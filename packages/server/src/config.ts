@@ -14,6 +14,9 @@ const envSchema = z
     JWT_MASTER_SECRET: z.string().min(32, 'must be at least 32 characters'),
     CORS_ORIGINS: z.string().default(''),
     MAX_JSON_BYTES: z.coerce.number().int().positive().default(1_048_576),
+    TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(0),
+    ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(86_400).default(900),
+    REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
   })
   .refine((e) => e.ADMIN_TOKEN !== e.JWT_MASTER_SECRET, {
     path: ['JWT_MASTER_SECRET'],
@@ -29,6 +32,10 @@ export interface Config {
   /** 'any' = `*`; an empty array = CORS disabled. */
   corsOrigins: 'any' | string[];
   maxJsonBytes: number;
+  /** Number of reverse proxies in front of the server; used to pick the client IP from X-Forwarded-For. 0 = use the socket address. */
+  trustProxyHops: number;
+  accessTokenTtlSeconds: number;
+  refreshTokenTtlDays: number;
 }
 
 export class ConfigError extends Error {}
@@ -52,5 +59,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     jwtMasterSecret: e.JWT_MASTER_SECRET,
     corsOrigins: origins.includes('*') ? 'any' : origins,
     maxJsonBytes: e.MAX_JSON_BYTES,
+    trustProxyHops: e.TRUST_PROXY_HOPS,
+    accessTokenTtlSeconds: e.ACCESS_TOKEN_TTL_SECONDS,
+    refreshTokenTtlDays: e.REFRESH_TOKEN_TTL_DAYS,
   };
 }
