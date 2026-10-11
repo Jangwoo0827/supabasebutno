@@ -83,7 +83,8 @@ export async function createApp(config: Config, overrides: AppOverrides = {}): P
     const corsMiddleware = cors({
       origin: origins === 'any' ? '*' : origins,
       allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowHeaders: ['authorization', 'apikey', 'content-type', 'prefer', 'x-client-info', 'x-upsert'],
+      // ngrok-skip-browser-warning: lets browsers get past ngrok's free-plan interstitial page (harmless elsewhere)
+      allowHeaders: ['authorization', 'apikey', 'content-type', 'prefer', 'x-client-info', 'x-upsert', 'ngrok-skip-browser-warning'],
       exposeHeaders: ['content-range', 'content-length', 'etag', 'x-request-id'],
       maxAge: 600,
     });
