@@ -35,6 +35,30 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run backup -- <폴더>` / `npm run restore -- <백업폴더>` | [백업·복원](#백업과-복원) (먼저 `npm run build`) |
 
+## 내 PC에서 바로 쓰기 (가장 쉬운 방법)
+
+```bash
+npm run local            # 또는 start-local.cmd 더블클릭
+```
+
+처음 실행하면 무작위 비밀값이 든 `.env` 를 만들고(git 에 올라가지 않음), 필요하면 설치·빌드까지 한 뒤 `127.0.0.1:8787` 에서 서버를 켭니다. **이 PC 안에서만 접근 가능**하므로 HTTPS·도메인·GitHub Pages 가 필요 없고, 대시보드는 `http://127.0.0.1:8787/dashboard/` 입니다 (`.env` 의 `ADMIN_TOKEN` 으로 로그인).
+
+`sbb` 명령으로 대시보드 없이도 프로젝트를 만들 수 있습니다 (서버가 켜져 있어야 함):
+
+```bash
+npm run sbb -- new my-game                                   # 프로젝트 + 키 출력
+npm run sbb -- table my-game scores player:text:nn time_ms:integer:nn user_id:text
+npm run sbb -- policy my-game scores leaderboard             # 누구나 읽기, 로그인해야 기록 (user_id 컬럼 자동 사용)
+npm run sbb -- snippet my-game                               # 웹페이지에 붙여 넣을 코드
+npm run sbb -- --help                                        # status list keys tables bucket delete …
+```
+
+- 컬럼 문법: `이름:타입[:pk][:nn][:unique][:default=값|now|uuid]` (타입: text integer real boolean json timestamp uuid). `pk` 가 없으면 `id integer` 기본 키가 자동으로 추가됩니다.
+- 정책 프리셋: `public-read` · `authenticated` · `owner` · `leaderboard` (`owner=컬럼`, `leaderboard=컬럼` 으로 사용자 id 컬럼 지정). JSON 파일 경로를 줘도 됩니다.
+- **테이블을 만들어도 정책이 없으면 `service_role` 키만 쓸 수 있습니다.** `sbb tables <프로젝트>` 가 정책이 없는 테이블을 `NO POLICY` 로 표시합니다.
+- **내 PC 에서만 도는 서버**를 쓰는 앱은 PC 가 꺼져 있으면 동작하지 않고, 다른 사람은 접속할 수 없습니다. GitHub Pages/itch.io 에 올려 다른 사람이 쓰는 앱에는 공개 HTTPS 서버가 필요합니다 (임시로는 `ngrok http 8787`, 상시 운영은 [배포](#배포-docker) 참고).
+- PC 를 켤 때 자동으로 시작하고 싶다면 `start-local.cmd` 의 바로가기를 시작프로그램 폴더(`shell:startup`)에 넣으면 됩니다.
+
 ## 관리자 대시보드 (Phase 7)
 
 `/dashboard/` — 프로젝트 목록·생성·삭제, **API 키 확인·재발급**, 테이블 편집기(생성·컬럼 추가/이름 변경/삭제·테이블 이름 변경/삭제), **데이터 편집기**(필터·페이지·행 추가/수정/삭제), 접근 정책 편집기(템플릿 + 서버 검증 오류 표시), 사용자 목록(삭제·강제 로그아웃), 파일(버킷 설정, 업로드·다운로드·삭제).
