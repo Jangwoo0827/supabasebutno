@@ -97,6 +97,13 @@ export function buildSelect(d: Dialect, table: TableInfo, q: ParsedQuery, extra:
   return { sql, params: p.values };
 }
 
+/** All columns of the rows an UPDATE/DELETE with the same WHERE would touch (no ordering or paging). */
+export function buildSelectWhere(d: Dialect, table: TableInfo, filters: Filter[], extra: Condition[]): BuiltQuery {
+  const p = new SqlParams(d);
+  const sql = `SELECT ${columnList(d, table, null)} FROM ${d.quoteIdent(table.name)}${whereClause(filters, extra, p)}`;
+  return { sql, params: p.values };
+}
+
 export function buildCount(d: Dialect, table: TableInfo, q: ParsedQuery, extra: Condition[] = []): BuiltQuery {
   const p = new SqlParams(d);
   const sql = `SELECT COUNT(*) AS count FROM ${d.quoteIdent(table.name)}${whereClause(q.filters, extra, p)}`;

@@ -12,6 +12,7 @@ import { authRoutes } from './auth/routes.js';
 import { ProjectRegistry } from './db/registry.js';
 import { sqliteSchemaDriver } from './db/sqlite/schema.js';
 import { PolicyStore } from './policy/store.js';
+import { RealtimeHub, type HubOptions } from './realtime/hub.js';
 import { adminRoutes } from './http/admin-routes.js';
 import { apiKeyAuth } from './http/auth.js';
 import { onError, onNotFound } from './http/error-handler.js';
@@ -25,6 +26,8 @@ import { StorageService } from './storage/service.js';
 export interface CreatedApp {
   app: Hono<AppEnv>;
   registry: ProjectRegistry;
+  /** WebSocket side of the server: call `realtime.attach(httpServer)` once the HTTP server exists. */
+  realtime: RealtimeHub;
 }
 
 /** Replaceable collaborators (production defaults are used when omitted). */
@@ -34,17 +37,23 @@ export interface AppOverrides {
   now?: () => number;
   /** Where uploaded files are kept (default: local disk under the data directory). */
   storageBackend?: StorageBackend;
+  /** Realtime limits and timers (defaults: see DEFAULT_HUB_OPTIONS). */
+  realtime?: Partial<HubOptions>;
 }
 
 export async function createApp(config: Config, overrides: AppOverrides = {}): Promise<CreatedApp> {
   const registry = await ProjectRegistry.open(config.dataDir);
   const now = overrides.now ?? Date.now;
   const backend = overrides.storageBackend ?? new LocalDiskBackend(join(config.dataDir, 'projects'));
+  const schemas = new SchemaCache(sqliteSchemaDriver);
+  const policies = new PolicyStore();
+  const realtime = new RealtimeHub({ config, registry, schemas, policies, now }, { maxConnections: config.realtimeMaxConnections, ...overrides.realtime });
   const deps: Deps = {
     config,
     registry,
-    schemas: new SchemaCache(sqliteSchemaDriver),
-    policies: new PolicyStore(),
+    schemas,
+    policies,
+    realtime,
     storage: new StorageService(backend, config, now),
     mailer: overrides.mailer ?? new ConsoleMailer(),
     limits: createLimits(now),
@@ -109,5 +118,5 @@ export async function createApp(config: Config, overrides: AppOverrides = {}): P
 
   app.route('/admin', adminRoutes(deps));
 
-  return { app, registry };
+  return { app, registry, realtime };
 }

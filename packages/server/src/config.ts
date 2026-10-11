@@ -22,6 +22,7 @@ const envSchema = z
     MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(50 * MIB),
     STORAGE_USER_QUOTA_BYTES: z.coerce.number().int().positive().default(100 * MIB),
     STORAGE_PROJECT_QUOTA_BYTES: z.coerce.number().int().positive().default(2048 * MIB),
+    REALTIME_MAX_CONNECTIONS: z.coerce.number().int().positive().default(500),
   })
   .refine((e) => e.ADMIN_TOKEN !== e.JWT_MASTER_SECRET, {
     path: ['JWT_MASTER_SECRET'],
@@ -47,6 +48,8 @@ export interface Config {
   storageUserQuotaBytes: number;
   /** Total bytes of all files in a project. */
   storageProjectQuotaBytes: number;
+  /** Simultaneous WebSocket connections the server accepts. */
+  realtimeMaxConnections: number;
 }
 
 export class ConfigError extends Error {}
@@ -76,5 +79,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     maxUploadBytes: e.MAX_UPLOAD_BYTES,
     storageUserQuotaBytes: e.STORAGE_USER_QUOTA_BYTES,
     storageProjectQuotaBytes: e.STORAGE_PROJECT_QUOTA_BYTES,
+    realtimeMaxConnections: e.REALTIME_MAX_CONNECTIONS,
   };
 }

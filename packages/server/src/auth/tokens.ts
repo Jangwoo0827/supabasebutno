@@ -31,7 +31,7 @@ export async function signAccessToken(
   return { token, expiresAt };
 }
 
-export type AccessVerification = ({ ok: true } & AccessClaims) | { ok: false; reason: 'expired' | 'invalid' };
+export type AccessVerification = ({ ok: true; /** Unix seconds */ expiresAt: number } & AccessClaims) | { ok: false; reason: 'expired' | 'invalid' };
 
 /** Verifies signature, expiry and that the token belongs to `projectId`. Does NOT check the session row. */
 export async function verifyAccessToken(
@@ -48,9 +48,9 @@ export async function verifyAccessToken(
       currentDate: new Date(nowMs),
     });
     if (payload.role !== 'authenticated' || payload.ref !== projectId) return { ok: false, reason: 'invalid' };
-    const { sub, sid, email } = payload;
-    if (typeof sub !== 'string' || typeof sid !== 'string' || typeof email !== 'string') return { ok: false, reason: 'invalid' };
-    return { ok: true, userId: sub, sessionId: sid, email };
+    const { sub, sid, email, exp } = payload;
+    if (typeof sub !== 'string' || typeof sid !== 'string' || typeof email !== 'string' || typeof exp !== 'number') return { ok: false, reason: 'invalid' };
+    return { ok: true, userId: sub, sessionId: sid, email, expiresAt: exp };
   } catch (err) {
     return { ok: false, reason: err instanceof errors.JWTExpired ? 'expired' : 'invalid' };
   }

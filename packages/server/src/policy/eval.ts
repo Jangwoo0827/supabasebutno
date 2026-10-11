@@ -38,10 +38,10 @@ export function toSql(expr: Expr, ctx: EvalContext, p: SqlParams): string {
   }
 }
 
-type Tri = boolean | null; // null = SQL "unknown"
+export type Tri = boolean | null; // null = SQL "unknown"
 
 /** SQLite ordering of two non-null values: numbers sort before text; text compares as UTF-8 bytes. */
-function compare(a: unknown, b: unknown): number {
+export function compare(a: unknown, b: unknown): number {
   const an = typeof a === 'number' || typeof a === 'bigint';
   const bn = typeof b === 'number' || typeof b === 'bigint';
   if (an && bn) return (a as number) < (b as number) ? -1 : (a as number) > (b as number) ? 1 : 0;
@@ -49,7 +49,7 @@ function compare(a: unknown, b: unknown): number {
   return Buffer.compare(Buffer.from(String(a)), Buffer.from(String(b)));
 }
 
-function cmp(op: ComparisonOp, a: unknown, b: unknown): Tri {
+export function cmp(op: ComparisonOp, a: unknown, b: unknown): Tri {
   if (a === null || a === undefined || b === null || b === undefined) return null;
   const c = compare(a, b);
   switch (op) {

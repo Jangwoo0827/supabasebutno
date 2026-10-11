@@ -112,7 +112,7 @@ describe('access tokens', () => {
   it('round-trips claims', async () => {
     const { token, expiresAt } = await signAccessToken(MASTER, 'projectaaaaaaaaa', claims, 900, NOW);
     expect(expiresAt).toBe(NOW + 900);
-    expect(await verifyAccessToken(MASTER, 'projectaaaaaaaaa', token, NOW * 1000)).toEqual({ ok: true, ...claims });
+    expect(await verifyAccessToken(MASTER, 'projectaaaaaaaaa', token, NOW * 1000)).toEqual({ ok: true, ...claims, expiresAt: NOW + 900 });
   });
 
   it('expires', async () => {

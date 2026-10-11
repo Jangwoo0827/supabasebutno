@@ -4,6 +4,7 @@ import type { Config } from '../config.js';
 import type { ProjectRegistry, ProjectRecord } from '../db/registry.js';
 import type { ApiKeyRole } from '../keys.js';
 import type { PolicyStore } from '../policy/store.js';
+import type { RealtimeHub } from '../realtime/hub.js';
 import type { SchemaCache } from '../schema/cache.js';
 import type { StorageService } from '../storage/service.js';
 
@@ -15,6 +16,8 @@ export interface Deps {
   /** Per-table access policies (compiled, cached). */
   policies: PolicyStore;
   storage: StorageService;
+  /** Broadcasts committed row changes to WebSocket subscribers. */
+  realtime: RealtimeHub;
   mailer: Mailer;
   limits: Limits;
   /** Current time in ms (injectable for tests). */

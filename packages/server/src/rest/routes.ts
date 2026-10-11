@@ -37,7 +37,7 @@ function contentRange(offset: number, count: number, total: number | undefined):
  * or the admin mount, which acts as service_role). What a caller may do is decided by
  * the table's policy (policy/plan.ts); without one, only service_role gets in.
  */
-export function restRoutes({ registry, schemas, policies }: Deps): Hono<AppEnv> {
+export function restRoutes({ registry, schemas, policies, realtime }: Deps): Hono<AppEnv> {
   const rest = new Hono<AppEnv>();
 
   rest.use('*', async (c, next) => {
@@ -56,7 +56,9 @@ export function restRoutes({ registry, schemas, policies }: Deps): Hono<AppEnv> 
     const plan = buildPlan(kind, role, c.get('userId'), policy, wantRows);
     const table = await schemas.table(project.id, db, name);
     if (!table) throw notFound('Table');
-    return { db, table, plan };
+    // Only pay for reading back full rows when somebody is actually listening.
+    const capture = realtime.hasSubscribers(project.id, table.name);
+    return { db, table, plan, capture, projectId: project.id };
   }
 
   const searchParams = (c: Context) => new URL(c.req.url).searchParams;
@@ -73,7 +75,7 @@ export function restRoutes({ registry, schemas, policies }: Deps): Hono<AppEnv> 
   rest.post('/:table', async (c) => {
     const prefer = parsePrefer(c.req.header('prefer'));
     const returning = prefer.return === 'representation';
-    const { db, table, plan } = await open(c, prefer.resolution ? 'upsert' : 'insert', returning);
+    const { db, table, plan, capture, projectId } = await open(c, prefer.resolution ? 'upsert' : 'insert', returning);
     const q = parseQuery(searchParams(c), table, 'insert');
     const body = await readJson(c);
 
@@ -85,26 +87,29 @@ export function restRoutes({ registry, schemas, policies }: Deps): Hono<AppEnv> 
       throw badRequest('invalid_parameter', '"on_conflict" requires Prefer: resolution=merge-duplicates or ignore-duplicates');
     }
 
-    const rows = await runInsert(db, table, { rows: Array.isArray(body) ? body : [body], returning, select: q.select, onConflict }, plan);
-    return returning ? c.json(rows, 201) : c.body(null, 201);
+    const result = await runInsert(db, table, { rows: Array.isArray(body) ? body : [body], returning, select: q.select, onConflict }, plan, capture);
+    realtime.publish(projectId, result.changes); // only reached if the transaction committed
+    return returning ? c.json(result.rows, 201) : c.body(null, 201);
   });
 
   rest.patch('/:table', async (c) => {
     const returning = parsePrefer(c.req.header('prefer')).return === 'representation';
-    const { db, table, plan } = await open(c, 'update', returning);
+    const { db, table, plan, capture, projectId } = await open(c, 'update', returning);
     const q = parseQuery(searchParams(c), table, 'write');
     // Mass updates must be explicit (e.g. `id=not.is.null`), never the result of a forgotten filter.
     if (q.filters.length === 0) throw badRequest('filter_required', 'PATCH requires at least one filter. To update every row, filter on the primary key with not.is.null');
-    const result = await runUpdate(db, table, await readJson(c), q, returning, plan);
+    const result = await runUpdate(db, table, await readJson(c), q, returning, plan, capture);
+    realtime.publish(projectId, result.changes);
     return returning ? c.json(result.rows, 200) : c.body(null, 204);
   });
 
   rest.delete('/:table', async (c) => {
     const returning = parsePrefer(c.req.header('prefer')).return === 'representation';
-    const { db, table, plan } = await open(c, 'delete', returning);
+    const { db, table, plan, capture, projectId } = await open(c, 'delete', returning);
     const q = parseQuery(searchParams(c), table, 'write');
     if (q.filters.length === 0) throw badRequest('filter_required', 'DELETE requires at least one filter. To delete every row, filter on the primary key with not.is.null');
-    const result = await runDelete(db, table, q, returning, plan);
+    const result = await runDelete(db, table, q, returning, plan, capture);
+    realtime.publish(projectId, result.changes);
     return returning ? c.json(result.rows, 200) : c.body(null, 204);
   });
 

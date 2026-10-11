@@ -1,6 +1,9 @@
 import { mkdtemp, rm } from 'node:fs/promises';
+import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { serve } from '@hono/node-server';
 import { createApp, type AppOverrides } from '../src/app.js';
 import type { Mail } from '../src/auth/mailer.js';
 import type { Config } from '../src/config.js';
@@ -24,6 +27,7 @@ export async function makeTestApp(overrides: Partial<Config> = {}, appOverrides:
     maxUploadBytes: 1_000_000,
     storageUserQuotaBytes: 5_000_000,
     storageProjectQuotaBytes: 20_000_000,
+    realtimeMaxConnections: 500,
     ...overrides,
   };
 
@@ -39,11 +43,22 @@ export async function makeTestApp(overrides: Partial<Config> = {}, appOverrides:
       offsetMs += s * 1000;
     },
   };
-  const { app, registry } = await createApp(config, {
+  const { app, registry, realtime } = await createApp(config, {
     mailer: { send: async (m) => void outbox.push(m) },
     now: () => Date.now() + offsetMs,
     ...appOverrides,
   });
+
+  const servers: Server[] = [];
+  /** Starts a real HTTP server (with the WebSocket endpoint) on a free port, for tests that need sockets. */
+  async function listen() {
+    const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 }) as Server;
+    await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+    realtime.attach(server);
+    servers.push(server);
+    const port = (server.address() as AddressInfo).port;
+    return { port, httpUrl: `http://127.0.0.1:${port}`, wsUrl: `ws://127.0.0.1:${port}/realtime` };
+  }
 
   async function call(method: string, path: string, opts: { body?: unknown; headers?: Record<string, string> } = {}) {
     const headers: Record<string, string> = { ...opts.headers };
@@ -74,6 +89,8 @@ export async function makeTestApp(overrides: Partial<Config> = {}, appOverrides:
     dataDir,
     outbox,
     clock,
+    realtime,
+    listen,
     call,
     admin,
     async createProject(name = 'demo') {
@@ -82,6 +99,11 @@ export async function makeTestApp(overrides: Partial<Config> = {}, appOverrides:
       return res.json as { id: string; name: string; keys: { anon: string; service_role: string } };
     },
     async close() {
+      await realtime.close().catch(() => undefined);
+      for (const s of servers) {
+        s.closeAllConnections();
+        await new Promise<void>((resolve) => s.close(() => resolve()));
+      }
       await registry.close().catch(() => undefined);
       await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     },

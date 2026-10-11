@@ -125,6 +125,22 @@ function parseFilter(column: ColumnInfo, raw: string): Filter {
   }
 }
 
+const MAX_SUBSCRIPTION_FILTERS = 5;
+
+/**
+ * Parses a stand-alone filter such as `done=eq.false&user_id=eq.abc` (realtime subscriptions).
+ * Same grammar and validation as REST filters; reserved parameters (select, order, ...) are refused.
+ */
+export function parseFilterString(raw: string, table: TableInfo): Filter[] {
+  const filters: Filter[] = [];
+  for (const [key, value] of new URLSearchParams(raw)) {
+    if (RESERVED.has(key)) throw badRequest('invalid_filter', `"${key}" cannot be used in a subscription filter`);
+    if (filters.length >= MAX_SUBSCRIPTION_FILTERS) throw badRequest('too_many_filters', `At most ${MAX_SUBSCRIPTION_FILTERS} filters are allowed`);
+    filters.push(parseFilter(columnOf(table, key), value));
+  }
+  return filters;
+}
+
 function parseSelect(raw: string, table: TableInfo): string[] | null {
   if (raw === '*') return null;
   const names = splitList(raw);

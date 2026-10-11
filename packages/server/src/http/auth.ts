@@ -1,12 +1,9 @@
 import type { Context, MiddlewareHandler } from 'hono';
-import { isSessionActive } from '../auth/service.js';
-import { verifyAccessToken } from '../auth/tokens.js';
 import { notFound, tooManyRequests, unauthorized } from '../core/errors.js';
 import { PROJECT_ID_RE } from '../core/ids.js';
 import { safeEqual } from '../core/safe-equal.js';
-import type { ProjectRecord } from '../db/registry.js';
-import { verifyApiKey } from '../keys.js';
 import { clientIp } from './client-ip.js';
+import { resolveIdentity } from './identity.js';
 import type { AppEnv, Deps } from './types.js';
 
 /**
@@ -28,27 +25,6 @@ export function requireAdmin({ config, limits }: Deps): MiddlewareHandler<AppEnv
   };
 }
 
-type BearerResult =
-  | { kind: 'user'; userId: string; sessionId: string }
-  | { kind: 'apikey' }
-  | { kind: 'invalid'; reason: 'expired' | 'invalid' };
-
-async function resolveBearer(deps: Deps, project: ProjectRecord, token: string): Promise<BearerResult> {
-  const { config, registry, now } = deps;
-  const user = await verifyAccessToken(config.jwtMasterSecret, project.id, token, now());
-  if (user.ok) {
-    // Revoked sessions (logout, password change, user deleted) stop working immediately.
-    const active = await isSessionActive(await registry.db(project.id), user.sessionId, user.userId);
-    return active ? { kind: 'user', userId: user.userId, sessionId: user.sessionId } : { kind: 'invalid', reason: 'invalid' };
-  }
-  if (user.reason === 'invalid') {
-    // Some clients send the anon key as `Authorization: Bearer`. That is not a user token; ignore it.
-    const key = await verifyApiKey(config.jwtMasterSecret, token, (id) => registry.get(id));
-    if (key && key.project.id === project.id) return { kind: 'apikey' };
-  }
-  return { kind: 'invalid', reason: user.reason };
-}
-
 export interface ApiKeyAuthOptions {
   /**
    * What to do with an Authorization token that is invalid or expired.
@@ -68,33 +44,22 @@ export interface ApiKeyAuthOptions {
  */
 export function apiKeyAuth(deps: Deps, opts: ApiKeyAuthOptions = {}): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
+    const bearer = /^Bearer (.+)$/i.exec(c.req.header('authorization') ?? '')?.[1];
     const token = c.req.header('apikey');
     if (!token) throw unauthorized('missing_apikey', 'Missing apikey header');
-    const verified = await verifyApiKey(deps.config.jwtMasterSecret, token, (id) => deps.registry.get(id));
-    if (!verified) throw unauthorized('invalid_apikey', 'Invalid API key');
+    const identity = await resolveIdentity(deps, token, bearer);
+    if (!identity) throw unauthorized('invalid_apikey', 'Invalid API key');
 
-    c.set('project', verified.project);
-    c.set('apiRole', verified.role);
-    c.set('role', verified.role);
-    c.set('userId', null);
-    c.set('sessionId', null);
-    c.set('bearerError', null);
-
-    const bearer = /^Bearer (.+)$/i.exec(c.req.header('authorization') ?? '')?.[1];
-    if (bearer) {
-      const result = await resolveBearer(deps, verified.project, bearer);
-      if (result.kind === 'user') {
-        c.set('userId', result.userId);
-        c.set('sessionId', result.sessionId);
-        // A service key stays a service key; the user id is merely recorded.
-        if (verified.role === 'anon') c.set('role', 'authenticated');
-      } else if (result.kind === 'invalid') {
-        if (opts.bearer !== 'lenient') {
-          throw unauthorized(result.reason === 'expired' ? 'token_expired' : 'invalid_token', 'Invalid or expired token');
-        }
-        c.set('bearerError', result.reason);
-      }
+    if ((identity.bearer === 'expired' || identity.bearer === 'invalid') && opts.bearer !== 'lenient') {
+      throw unauthorized(identity.bearer === 'expired' ? 'token_expired' : 'invalid_token', 'Invalid or expired token');
     }
+
+    c.set('project', identity.project);
+    c.set('apiRole', identity.apiRole);
+    c.set('role', identity.role);
+    c.set('userId', identity.userId);
+    c.set('sessionId', identity.sessionId);
+    c.set('bearerError', identity.bearer === 'expired' || identity.bearer === 'invalid' ? identity.bearer : null);
     await next();
   };
 }

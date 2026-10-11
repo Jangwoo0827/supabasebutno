@@ -3,8 +3,8 @@
 Supabase의 핵심 기능 중 실제로 쓰는 것만 가볍게 구현한 **셀프호스팅 멀티 프로젝트 BaaS**입니다.
 Node.js + TypeScript, [Hono](https://hono.dev), SQLite(better-sqlite3).
 
-> **진행 상황** — 완료: 프로젝트 · API 키 · 테이블 DDL(1a), REST CRUD(1b), 사용자 인증(2), 접근 제어 정책(3), 파일 스토리지(4).
-> 아직 없음: 실시간(5), SDK(6), 대시보드(7).
+> **진행 상황** — 완료: 프로젝트 · API 키 · 테이블 DDL(1a), REST CRUD(1b), 사용자 인증(2), 접근 제어 정책(3), 파일 스토리지(4), 실시간(5).
+> 아직 없음: SDK(6), 대시보드(7), Docker·백업 스크립트.
 
 ## 요구사항
 
@@ -50,6 +50,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 | `MAX_UPLOAD_BYTES` | `52428800` | 파일 1개 최대 크기 (50 MiB) |
 | `STORAGE_USER_QUOTA_BYTES` | `104857600` | 로그인 사용자 1명이 프로젝트에 저장할 수 있는 총량 (100 MiB) |
 | `STORAGE_PROJECT_QUOTA_BYTES` | `2147483648` | 프로젝트 전체 저장 총량 (2 GiB) |
+| `REALTIME_MAX_CONNECTIONS` | `500` | 동시에 받아주는 WebSocket 연결 수 |
 
 ## 구조
 
@@ -318,6 +319,50 @@ curl -X POST "$B/storage/object/avatars/me/photo.png" -H "apikey: $ANON" -H "Aut
 
 **알려진 한계**: 서명된 임시 URL(private 파일을 `<img>` 로 쓰려면 아직 `fetch` + blob 필요), 폴더 개념/이동/복사, 이미지 리사이즈, 업로드 재개(resumable)는 없습니다.
 `x-upsert` 로 덮어쓸 때 새 파일을 먼저 완전히 저장한 뒤 교체하므로 중간에 실패해도 기존 파일이 유지됩니다.
+
+## 실시간 (Phase 5)
+
+WebSocket 으로 테이블의 INSERT / UPDATE / DELETE 를 구독합니다. 엔드포인트: `ws://<host>/realtime`
+
+```js
+const ws = new WebSocket('ws://localhost:8787/realtime');
+ws.onopen = () => ws.send(JSON.stringify({ type: 'auth', apikey: ANON_KEY, access_token: SESSION_ACCESS_TOKEN /* 선택 */ }));
+ws.onmessage = (e) => {
+  const m = JSON.parse(e.data);
+  if (m.type === 'auth_ok') ws.send(JSON.stringify({ type: 'subscribe', id: 'lb', table: 'scores', events: ['INSERT'], filter: 'mode=eq.rush' }));
+  if (m.type === 'event') console.log(m.event, m.new, m.old);
+};
+```
+
+| 방향 | 메시지 |
+|---|---|
+| 클라이언트 → 서버 | `{type:"auth", apikey, access_token?}` — **반드시 첫 메시지** (5초 안에). 토큰 갱신 시 다시 보내면 구독은 유지됨 |
+| | `{type:"subscribe", id, table, events?, filter?}` — `events`: `INSERT` `UPDATE` `DELETE` `*`(기본), `filter`: REST 필터 문법 `col=eq.v&col2=gt.3` (최대 5개, AND) |
+| | `{type:"unsubscribe", id}` · `{type:"ping"}` |
+| 서버 → 클라이언트 | `{type:"auth_ok", role, user_id, expires_at}` · `{type:"subscribed"\|"unsubscribed", id}` · `{type:"pong"}` |
+| | `{type:"event", subscription, event, table, new?, old?, commit_timestamp}` — 행은 REST 와 같은 형태(boolean·JSON 복원) |
+| | `{type:"error", id?, code, message}` — 구독 하나가 거부돼도 연결은 유지됨 |
+
+종료 코드: `4400` 잘못된 메시지 · `4401` 인증 실패/만료/세션 종료 · `1008` 메시지 과다 · `1009` 메시지 너무 큼 · `1013` 수신이 느림 · `1001` 서버 종료.
+
+**보안 모델**
+
+- apikey·토큰은 URL 이 아니라 **첫 메시지**로 보냅니다 (URL 은 로그에 남습니다). 쿠키는 쓰지 않으므로 다른 사이트가 연결해도 인증 정보를 가져갈 수 없습니다.
+- 구독하려면 REST 의 SELECT 와 같은 규칙이 필요합니다: `service_role` 이거나 테이블 정책에 내 역할이 들어간 `select` 규칙이 있어야 합니다. 없으면 `forbidden` (존재하지 않는 테이블도 같은 응답).
+- **이벤트마다** 구독자의 select 정책을 다시 평가합니다. 정책을 바꾸면 이미 열린 구독에도 바로 적용됩니다. `UPDATE` 의 `old` 는 이전 행도 볼 수 있는 구독자에게만 포함됩니다.
+- 이벤트는 **트랜잭션이 커밋된 뒤에만** 발행됩니다. 롤백된 쓰기(정책 위반, UNIQUE 위반, 일괄 INSERT 실패)는 아무에게도 전달되지 않습니다.
+- 로그인한 연결은 access token 이 만료되면 닫힙니다 (`4401 token_expired`). 만료 전에 새 토큰으로 `auth` 를 다시 보내면 유지됩니다. 약 1분마다 세션이 폐기됐는지도 확인합니다 (로그아웃 → `4401 session_revoked`).
+- 제한: 서버 전체 연결 수(`REALTIME_MAX_CONNECTIONS`, 기본 500), IP 당 20개, 연결당 구독 20개, 메시지 16 KiB, 10초에 100개 메시지. 못 받아가는 느린 클라이언트는 메모리를 키우지 않고 끊습니다. 압축은 끕니다.
+- `CORS_ORIGINS` 에 특정 origin 을 지정했다면 그 외 브라우저 origin 의 연결은 403 입니다 (Origin 헤더가 없는 서버 클라이언트는 허용).
+- 리버스 프록시(Caddy/nginx/cloudflared)는 WebSocket 업그레이드를 통과시켜야 하고, 유휴 연결을 너무 일찍 끊지 않도록 타임아웃을 넉넉히 설정하세요. 서버는 15초마다 ping 을 보냅니다.
+
+**알려진 한계**
+
+- **이 서버를 거친 쓰기만** 이벤트가 됩니다 (REST). SQLite 에는 LISTEN/NOTIFY 가 없어서 DB 파일을 직접 수정하거나 다른 프로세스가 쓴 변경은 감지하지 못합니다.
+- 행이 구독자에게 **보이지 않게 바뀐 경우**(예: `shared` 를 true → false)에는 이벤트가 가지 않습니다. 구독자는 그 행이 사라졌다는 것을 알 수 없습니다. 필요하면 "비공개로 바꾸기" 대신 DELETE 후 재생성하거나, 별도 플래그 컬럼을 두세요.
+- 메시지 전달은 **최대 한 번**입니다. 연결이 끊긴 동안의 이벤트는 재전송되지 않으므로, 재연결하면 REST 로 현재 상태를 다시 읽으세요.
+- 단일 프로세스 전용입니다 (이벤트 버스가 메모리). 서버를 여러 대로 늘리면 다른 인스턴스의 변경을 받지 못합니다.
+- 구독자가 있는 테이블에 쓸 때만 변경 전 행 조회 같은 추가 작업이 생깁니다. 구독자가 없으면 쓰기 성능은 그대로입니다.
 
 ### 오류 형식
 

@@ -1,7 +1,8 @@
 import type { Database, SqlValue } from '../db/driver.js';
 import { AppError, badRequest } from '../core/errors.js';
+import type { RowChange } from '../realtime/types.js';
 import type { TableInfo } from '../schema/types.js';
-import { buildCount, buildDelete, buildInsert, buildSelect, buildUpdate, type Condition, type SqlParams } from './builder.js';
+import { buildCount, buildDelete, buildInsert, buildSelect, buildSelectWhere, buildUpdate, type Condition, type SqlParams } from './builder.js';
 import type { ParsedQuery } from './parse.js';
 import { coerceWriteValue, decodeRow } from './values.js';
 
@@ -29,6 +30,14 @@ export interface AccessPlan {
 export const UNRESTRICTED: AccessPlan = { restricted: false, where: [] };
 
 export const policyViolation = () => new AppError(403, 'policy_violation', "The change would violate this table's access policy");
+
+/** Result of a write: the rows to echo to the caller, and the committed changes to broadcast to realtime subscribers. */
+export interface WriteResult {
+  rows: Row[];
+  count: number;
+  /** Only filled when `capture` was requested; publish them AFTER the transaction has committed (which is when this returns). */
+  changes: RowChange[];
+}
 
 /** Maps integrity-constraint failures to client errors (409/400) instead of an opaque 500. */
 function translate(db: Database, err: unknown): never {
@@ -74,6 +83,7 @@ export function toRow(table: TableInfo, input: unknown, opts: { forInsert: boole
 
 const allColumns = (table: TableInfo) => table.columns.map((c) => c.name);
 const returningColumns = (table: TableInfo, select: string[] | null) => select ?? allColumns(table);
+const pkName = (table: TableInfo) => (table.columns.find((c) => c.primary_key) ?? table.columns[0]!).name;
 
 /** What a write returns to the caller: rows they may read, limited to the requested columns, in API form. */
 function present(table: TableInfo, rows: Row[], select: string[] | null, plan: AccessPlan): Row[] {
@@ -108,39 +118,53 @@ export interface InsertRequest {
 }
 
 /** Inserts all rows atomically. Returns the created/updated rows when `returning` is set. */
-export async function runInsert(db: Database, table: TableInfo, req: InsertRequest, plan: AccessPlan): Promise<Row[]> {
+export async function runInsert(db: Database, table: TableInfo, req: InsertRequest, plan: AccessPlan, capture = false): Promise<WriteResult> {
   if (req.rows.length === 0 || req.rows.length > MAX_INSERT_ROWS) {
     throw badRequest('invalid_body', `Provide between 1 and ${MAX_INSERT_ROWS} rows`);
   }
   // Forced values (policy `set`) win over anything the client sent.
   const prepared = req.rows.map((r) => ({ ...toRow(table, r, { forInsert: true }), ...plan.set }));
-  // Restricted callers always read back the full stored row so the policy can be checked against it.
-  const cols = plan.restricted ? allColumns(table) : returningColumns(table, req.select);
-  const wantRows = plan.restricted || req.returning;
+  // Restricted callers (policy check) and realtime capture need the full stored row.
+  const needFull = plan.restricted || capture;
+  const cols = needFull ? allColumns(table) : returningColumns(table, req.select);
+  const wantRows = needFull || req.returning;
+  const q = db.dialect.quoteIdent;
 
   return guarded(db, () =>
     db.transaction(async (tx) => {
       const out: Row[] = [];
+      const changes: RowChange[] = [];
       for (const row of prepared) {
         const onConflict = req.onConflict && {
           column: req.onConflict.column,
           update: req.onConflict.mode === 'merge' ? Object.keys(row).filter((c) => c !== req.onConflict!.column) : [],
           where: plan.where.length ? (p: SqlParams) => plan.where.map((c) => `(${c(p)})`).join(' AND ') : undefined,
         };
-        const q = buildInsert(tx.dialect, table, row, { returning: wantRows ? cols : null, onConflict });
+
+        // For realtime, an upsert is an UPDATE (with the previous row) if the key already exists, otherwise an INSERT.
+        let previous: Row | undefined;
+        if (capture && req.onConflict?.mode === 'merge') {
+          const key = row[req.onConflict.column];
+          if (key !== undefined && key !== null) {
+            previous = await tx.get<Row>(`SELECT * FROM ${q(table.name)} WHERE ${q(req.onConflict.column)} = ${tx.dialect.placeholder(1)}`, [key]);
+          }
+        }
+
+        const stmt = buildInsert(tx.dialect, table, row, { returning: wantRows ? cols : null, onConflict });
         if (!wantRows) {
-          await tx.run(q.sql, q.params);
+          await tx.run(stmt.sql, stmt.params);
           continue;
         }
-        const rows = await tx.all<Row>(q.sql, q.params);
+        const rows = await tx.all<Row>(stmt.sql, stmt.params);
         if (plan.restricted) {
           // A merge that touched nothing means the key exists but the caller may not update that row.
           if (rows.length === 0 && req.onConflict?.mode === 'merge') throw policyViolation();
           if (plan.check && !rows.every((r) => plan.check!(r))) throw policyViolation();
         }
         out.push(...rows);
+        if (capture) for (const r of rows) changes.push(previous ? { type: 'UPDATE', table, new: r, old: previous } : { type: 'INSERT', table, new: r });
       }
-      return req.returning ? present(table, out, req.select, plan) : [];
+      return { rows: req.returning ? present(table, out, req.select, plan) : [], count: out.length, changes };
     }),
   );
 }
@@ -152,18 +176,29 @@ export async function runUpdate(
   q: ParsedQuery,
   returning: boolean,
   plan: AccessPlan,
-): Promise<{ rows: Row[]; changes: number }> {
+  capture = false,
+): Promise<WriteResult> {
   const values = toRow(table, body, { forInsert: false });
   if (Object.keys(values).length === 0) throw badRequest('invalid_body', 'Provide at least one column to update');
-  const wantRows = plan.restricted || returning;
-  const stmt = buildUpdate(db.dialect, table, values, q, plan.where, wantRows ? (plan.restricted ? allColumns(table) : returningColumns(table, q.select)) : null);
+  const needFull = plan.restricted || capture;
+  const wantRows = needFull || returning;
+  const stmt = buildUpdate(db.dialect, table, values, q, plan.where, wantRows ? (needFull ? allColumns(table) : returningColumns(table, q.select)) : null);
+  const pk = pkName(table);
 
   return guarded(db, () =>
     db.transaction(async (tx) => {
-      if (!wantRows) return { rows: [], changes: (await tx.run(stmt.sql, stmt.params)).changes };
+      // The rows as they were before the update, so subscribers can be told what changed.
+      const before = new Map<unknown, Row>();
+      if (capture) {
+        const sel = buildSelectWhere(tx.dialect, table, q.filters, plan.where);
+        for (const r of await tx.all<Row>(sel.sql, sel.params)) before.set(r[pk], r);
+      }
+      if (!wantRows) return { rows: [], count: (await tx.run(stmt.sql, stmt.params)).changes, changes: [] };
+
       const rows = await tx.all<Row>(stmt.sql, stmt.params);
       if (plan.restricted && plan.check && !rows.every((r) => plan.check!(r))) throw policyViolation();
-      return { rows: returning ? present(table, rows, q.select, plan) : [], changes: rows.length };
+      const changes: RowChange[] = capture ? rows.map((r) => ({ type: 'UPDATE', table, new: r, old: before.get(r[pk]) })) : [];
+      return { rows: returning ? present(table, rows, q.select, plan) : [], count: rows.length, changes };
     }),
   );
 }
@@ -174,11 +209,14 @@ export async function runDelete(
   q: ParsedQuery,
   returning: boolean,
   plan: AccessPlan,
-): Promise<{ rows: Row[]; changes: number }> {
-  const stmt = buildDelete(db.dialect, table, q, plan.where, returning ? (plan.restricted ? allColumns(table) : returningColumns(table, q.select)) : null);
+  capture = false,
+): Promise<WriteResult> {
+  const wantRows = returning || capture;
+  const stmt = buildDelete(db.dialect, table, q, plan.where, wantRows ? (plan.restricted || capture ? allColumns(table) : returningColumns(table, q.select)) : null);
   return guarded(db, async () => {
-    if (!returning) return { rows: [], changes: (await db.run(stmt.sql, stmt.params)).changes };
+    if (!wantRows) return { rows: [], count: (await db.run(stmt.sql, stmt.params)).changes, changes: [] };
     const rows = await db.all<Row>(stmt.sql, stmt.params);
-    return { rows: present(table, rows, q.select, plan), changes: rows.length };
+    const changes: RowChange[] = capture ? rows.map((r) => ({ type: 'DELETE', table, old: r })) : [];
+    return { rows: returning ? present(table, rows, q.select, plan) : [], count: rows.length, changes };
   });
 }
