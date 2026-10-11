@@ -3,6 +3,7 @@ import type { Limits } from '../auth/limits.js';
 import type { Config } from '../config.js';
 import type { ProjectRegistry, ProjectRecord } from '../db/registry.js';
 import type { ApiKeyRole } from '../keys.js';
+import type { PolicyStore } from '../policy/store.js';
 import type { SchemaCache } from '../schema/cache.js';
 
 export interface Deps {
@@ -10,6 +11,8 @@ export interface Deps {
   registry: ProjectRegistry;
   /** Table metadata cache; call `schemas.invalidate(projectId)` after any DDL. */
   schemas: SchemaCache;
+  /** Per-table access policies (compiled, cached). */
+  policies: PolicyStore;
   mailer: Mailer;
   limits: Limits;
   /** Current time in ms (injectable for tests). */

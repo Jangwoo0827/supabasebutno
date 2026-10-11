@@ -73,4 +73,20 @@ export const projectMigrations: Migration[] = [
       );
     `,
   },
+  {
+    version: 3,
+    name: 'create_policies',
+    sql: `
+      -- One access policy per table. "source" is the JSON the admin wrote, "compiled" the validated
+      -- condition tree the server evaluates, "columns" the columns it refers to (schema changes that
+      -- would break them are refused).
+      CREATE TABLE _policies (
+        table_name TEXT PRIMARY KEY,
+        source     TEXT NOT NULL,
+        compiled   TEXT NOT NULL,
+        columns    TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `,
+  },
 ];

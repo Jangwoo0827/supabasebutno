@@ -1,13 +1,14 @@
 import { Hono } from 'hono';
-import { badRequest, notFound } from '../core/errors.js';
+import { AppError, badRequest, notFound } from '../core/errors.js';
 import { PROJECT_ID_RE } from '../core/ids.js';
+import { PolicyError } from '../policy/parse.js';
 import type { ProjectRecord } from '../db/registry.js';
 import { sqliteSchemaDriver } from '../db/sqlite/schema.js';
 import { issueApiKeys } from '../keys.js';
 import { TableService } from '../schema/service.js';
 import { alterTableSchema, createProjectSchema, createTableSchema } from '../schema/validation.js';
 import { requireAdmin } from './auth.js';
-import { parseJson } from './helpers.js';
+import { parseJson, readJson } from './helpers.js';
 import type { AppEnv, Deps } from './types.js';
 
 /**
@@ -15,7 +16,7 @@ import type { AppEnv, Deps } from './types.js';
  * Not CORS-enabled: it is meant for the operator's own tooling and the (same-origin) dashboard.
  */
 export function adminRoutes(deps: Deps): Hono<AppEnv> {
-  const { config, registry, schemas } = deps;
+  const { config, registry, schemas, policies } = deps;
   const admin = new Hono<AppEnv>();
 
   admin.use('*', requireAdmin(deps));
@@ -61,6 +62,7 @@ export function adminRoutes(deps: Deps): Hono<AppEnv> {
     }
     await registry.delete(project.id);
     schemas.invalidate(project.id);
+    policies.invalidate(project.id);
     return c.body(null, 204);
   });
 
@@ -94,6 +96,7 @@ export function adminRoutes(deps: Deps): Hono<AppEnv> {
     const input = await parseJson(c, alterTableSchema);
     const altered = await (await tablesOf(project.id)).alter(c.req.param('table'), input);
     schemas.invalidate(project.id);
+    policies.invalidate(project.id); // a table rename moves its policy
     return c.json(altered);
   });
 
@@ -101,6 +104,41 @@ export function adminRoutes(deps: Deps): Hono<AppEnv> {
     const project = await requireProject(c.req.param('id'));
     await (await tablesOf(project.id)).drop(c.req.param('table'));
     schemas.invalidate(project.id);
+    policies.invalidate(project.id);
+    return c.body(null, 204);
+  });
+
+  // ---- access policies ---------------------------------------------------
+
+  admin.get('/projects/:id/policies', async (c) => {
+    const project = await requireProject(c.req.param('id'));
+    return c.json({ policies: await policies.list(await registry.db(project.id)) });
+  });
+
+  admin.get('/projects/:id/policies/:table', async (c) => {
+    const project = await requireProject(c.req.param('id'));
+    const stored = await policies.getSource(await registry.db(project.id), c.req.param('table'));
+    if (!stored) throw notFound('Policy');
+    return c.json(stored);
+  });
+
+  admin.put('/projects/:id/policies/:table', async (c) => {
+    const project = await requireProject(c.req.param('id'));
+    const db = await registry.db(project.id);
+    const table = await schemas.table(project.id, db, c.req.param('table'));
+    if (!table) throw notFound('Table');
+    const raw = await readJson(c);
+    try {
+      return c.json(await policies.put(project.id, db, table, raw, new Date(deps.now()).toISOString()));
+    } catch (err) {
+      if (err instanceof PolicyError) throw new AppError(400, 'invalid_policy', err.message, [{ path: err.path, message: err.message }]);
+      throw err;
+    }
+  });
+
+  admin.delete('/projects/:id/policies/:table', async (c) => {
+    const project = await requireProject(c.req.param('id'));
+    if (!(await policies.remove(project.id, await registry.db(project.id), c.req.param('table')))) throw notFound('Policy');
     return c.body(null, 204);
   });
 

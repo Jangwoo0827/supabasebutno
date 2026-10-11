@@ -1,8 +1,9 @@
 import { Hono, type Context } from 'hono';
-import { AppError, badRequest, notFound } from '../core/errors.js';
+import { badRequest, notFound } from '../core/errors.js';
 import { readJson } from '../http/helpers.js';
 import type { AppEnv, Deps } from '../http/types.js';
-import { UNRESTRICTED, runDelete, runInsert, runSelect, runUpdate, type AccessPlan } from './engine.js';
+import { buildPlan, type RequestKind } from '../policy/plan.js';
+import { runDelete, runInsert, runSelect, runUpdate } from './engine.js';
 import { parseQuery } from './parse.js';
 
 interface Prefer {
@@ -32,11 +33,11 @@ function contentRange(offset: number, count: number, total: number | undefined):
  * REST CRUD over the project's tables:
  *   GET /:table   POST /:table   PATCH /:table   DELETE /:table
  *
- * Expects an earlier middleware to have set `project` and `role` (apikey auth, or the admin
- * mount, which acts as service_role). Phase 1b: only service_role may use it; the
- * policy engine (Phase 3) will decide for anon / authenticated.
+ * Expects an earlier middleware to have set `project`, `role` and `userId` (apikey auth,
+ * or the admin mount, which acts as service_role). What a caller may do is decided by
+ * the table's policy (policy/plan.ts); without one, only service_role gets in.
  */
-export function restRoutes({ registry, schemas }: Deps): Hono<AppEnv> {
+export function restRoutes({ registry, schemas, policies }: Deps): Hono<AppEnv> {
   const rest = new Hono<AppEnv>();
 
   rest.use('*', async (c, next) => {
@@ -44,26 +45,24 @@ export function restRoutes({ registry, schemas }: Deps): Hono<AppEnv> {
     c.header('Cache-Control', 'no-store');
   });
 
-  async function open(c: Context<AppEnv>) {
+  async function open(c: Context<AppEnv>, kind: RequestKind, wantRows = false) {
     const project = c.get('project');
+    const db = await registry.db(project.id);
+    const name = c.req.param('table') ?? '';
     // Access is decided BEFORE the table is looked up, so callers without access
     // cannot use 403-vs-404 to find out which tables exist.
-    const plan = authorize(c.get('role'));
-    const db = await registry.db(project.id);
-    const table = await schemas.table(project.id, db, c.req.param('table') ?? '');
+    const role = c.get('role');
+    const policy = role === 'service_role' ? undefined : await policies.get(project.id, db, name);
+    const plan = buildPlan(kind, role, c.get('userId'), policy, wantRows);
+    const table = await schemas.table(project.id, db, name);
     if (!table) throw notFound('Table');
     return { db, table, plan };
-  }
-
-  function authorize(role: string): AccessPlan {
-    if (role === 'service_role') return UNRESTRICTED;
-    throw new AppError(403, 'forbidden', 'No access policy allows this request');
   }
 
   const searchParams = (c: Context) => new URL(c.req.url).searchParams;
 
   rest.get('/:table', async (c) => {
-    const { db, table, plan } = await open(c);
+    const { db, table, plan } = await open(c, 'select');
     const q = parseQuery(searchParams(c), table, 'read');
     const prefer = parsePrefer(c.req.header('prefer'));
     const { rows, total } = await runSelect(db, table, q, plan, prefer.count === 'exact');
@@ -72,9 +71,10 @@ export function restRoutes({ registry, schemas }: Deps): Hono<AppEnv> {
   });
 
   rest.post('/:table', async (c) => {
-    const { db, table, plan } = await open(c);
-    const q = parseQuery(searchParams(c), table, 'insert');
     const prefer = parsePrefer(c.req.header('prefer'));
+    const returning = prefer.return === 'representation';
+    const { db, table, plan } = await open(c, prefer.resolution ? 'upsert' : 'insert', returning);
+    const q = parseQuery(searchParams(c), table, 'insert');
     const body = await readJson(c);
 
     let onConflict;
@@ -85,26 +85,25 @@ export function restRoutes({ registry, schemas }: Deps): Hono<AppEnv> {
       throw badRequest('invalid_parameter', '"on_conflict" requires Prefer: resolution=merge-duplicates or ignore-duplicates');
     }
 
-    const returning = prefer.return === 'representation';
     const rows = await runInsert(db, table, { rows: Array.isArray(body) ? body : [body], returning, select: q.select, onConflict }, plan);
     return returning ? c.json(rows, 201) : c.body(null, 201);
   });
 
   rest.patch('/:table', async (c) => {
-    const { db, table, plan } = await open(c);
+    const returning = parsePrefer(c.req.header('prefer')).return === 'representation';
+    const { db, table, plan } = await open(c, 'update', returning);
     const q = parseQuery(searchParams(c), table, 'write');
     // Mass updates must be explicit (e.g. `id=not.is.null`), never the result of a forgotten filter.
     if (q.filters.length === 0) throw badRequest('filter_required', 'PATCH requires at least one filter. To update every row, filter on the primary key with not.is.null');
-    const returning = parsePrefer(c.req.header('prefer')).return === 'representation';
     const result = await runUpdate(db, table, await readJson(c), q, returning, plan);
     return returning ? c.json(result.rows, 200) : c.body(null, 204);
   });
 
   rest.delete('/:table', async (c) => {
-    const { db, table, plan } = await open(c);
+    const returning = parsePrefer(c.req.header('prefer')).return === 'representation';
+    const { db, table, plan } = await open(c, 'delete', returning);
     const q = parseQuery(searchParams(c), table, 'write');
     if (q.filters.length === 0) throw badRequest('filter_required', 'DELETE requires at least one filter. To delete every row, filter on the primary key with not.is.null');
-    const returning = parsePrefer(c.req.header('prefer')).return === 'representation';
     const result = await runDelete(db, table, q, returning, plan);
     return returning ? c.json(result.rows, 200) : c.body(null, 204);
   });

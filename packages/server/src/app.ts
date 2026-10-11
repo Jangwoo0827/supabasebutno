@@ -10,6 +10,7 @@ import { ConsoleMailer, type Mailer } from './auth/mailer.js';
 import { authRoutes } from './auth/routes.js';
 import { ProjectRegistry } from './db/registry.js';
 import { sqliteSchemaDriver } from './db/sqlite/schema.js';
+import { PolicyStore } from './policy/store.js';
 import { adminRoutes } from './http/admin-routes.js';
 import { apiKeyAuth } from './http/auth.js';
 import { onError, onNotFound } from './http/error-handler.js';
@@ -36,6 +37,7 @@ export async function createApp(config: Config, overrides: AppOverrides = {}): P
     config,
     registry,
     schemas: new SchemaCache(sqliteSchemaDriver),
+    policies: new PolicyStore(),
     mailer: overrides.mailer ?? new ConsoleMailer(),
     limits: createLimits(now),
     now,

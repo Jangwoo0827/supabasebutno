@@ -3,8 +3,8 @@
 Supabase의 핵심 기능 중 실제로 쓰는 것만 가볍게 구현한 **셀프호스팅 멀티 프로젝트 BaaS**입니다.
 Node.js + TypeScript, [Hono](https://hono.dev), SQLite(better-sqlite3).
 
-> **진행 상황** — 완료: 프로젝트 · API 키 · 테이블 DDL(1a), REST CRUD(1b), 사용자 인증(2).
-> 아직 없음: 접근 제어(3), 스토리지(4), 실시간(5), SDK(6), 대시보드(7).
+> **진행 상황** — 완료: 프로젝트 · API 키 · 테이블 DDL(1a), REST CRUD(1b), 사용자 인증(2), 접근 제어 정책(3).
+> 아직 없음: 스토리지(4), 실시간(5), SDK(6), 대시보드(7).
 
 ## 요구사항
 
@@ -136,8 +136,8 @@ curl -X PATCH $B/admin/projects/$ID/tables/todos -H "$A" -H "Content-Type: appli
 
 ## REST API (Phase 1b)
 
-`apikey` 헤더의 키로 프로젝트가 결정되므로 URL에는 프로젝트 id가 없습니다. 지금은 `service_role` 키만 허용되고,
-`anon` 은 정책(Phase 3)이 생기기 전까지 **모든 테이블에서 403** 입니다.
+`apikey` 헤더의 키로 프로젝트가 결정되므로 URL에는 프로젝트 id가 없습니다.
+`anon` / 로그인한 사용자는 아래 [접근 제어](#접근-제어--정책-phase-3) 정책이 허용한 것만 할 수 있습니다 (정책이 없으면 **403**).
 
 ```bash
 export R="apikey: <service_role 키>"
@@ -205,6 +205,64 @@ curl -X POST $B/auth/signup -H "apikey: $ANON" -H "Content-Type: application/jso
 > **Rate limit 의 IP** — 기본값(`TRUST_PROXY_HOPS=0`)에서는 소켓 주소만 쓰고 `X-Forwarded-For` 는 무시합니다.
 > Caddy/nginx/cloudflared 같은 리버스 프록시 뒤에서 돌린다면 그 개수만큼 `TRUST_PROXY_HOPS` 를 설정하세요.
 > 프록시가 있는데 0 이면 모든 사용자가 하나의 IP 로 보이고, 프록시가 없는데 1 이상이면 클라이언트가 IP 를 위조할 수 있습니다.
+
+## 접근 제어 — 정책 (Phase 3)
+
+Supabase 의 Row Level Security 를 JSON 정책으로 대체합니다. **정책이 없는 테이블은 anon·로그인 사용자 모두 403 (deny by default)** 이고,
+`service_role` 키만 정책을 우회합니다.
+
+### 정책 관리 (관리자 API)
+
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| `PUT` | `/admin/projects/:id/policies/:table` | 정책 등록/교체. 실제 테이블 컬럼과 대조해 검증하며, 틀리면 `400 invalid_policy` + 오류 위치(path) |
+| `GET` | `/admin/projects/:id/policies` · `/:table` | 목록 / 단건 |
+| `DELETE` | `/admin/projects/:id/policies/:table` | 삭제 (다시 전부 거부) |
+
+정책은 **다음 요청부터 즉시** 적용됩니다.
+
+### 정책 형식
+
+```json
+{
+  "select": { "roles": ["anon", "authenticated"], "where": { "or": [{ "shared": true }, { "owner": "$uid" }] } },
+  "insert": { "roles": ["authenticated"], "set": { "owner": "$uid" }, "check": { "column": "level", "op": "lte", "value": 5 } },
+  "update": { "roles": ["authenticated"], "where": { "owner": "$uid" } },
+  "delete": { "roles": ["authenticated"], "where": { "owner": "$uid" } }
+}
+```
+
+| 동작 | 키 | 의미 |
+|---|---|---|
+| 공통 | `roles` | `anon` / `authenticated` 중 허용할 역할 (필수). 목록에 없으면 403 |
+| `select` `delete` | `where` | 대상이 될 수 있는 행. 사용자 필터에 **AND** 로 자동 추가됨 |
+| `update` | `where` | 수정할 수 있는 기존 행 |
+| | `check` | 수정 **후** 행이 만족해야 하는 조건 (생략하면 `where` 와 동일 → 소유자 변경 불가) |
+| `insert` | `set` | 서버가 강제로 채우는 컬럼 (`{"owner":"$uid"}`). 클라이언트가 보낸 값을 덮어씀 |
+| | `check` | 저장된 행(기본값 포함)이 만족해야 하는 조건 |
+
+**조건 문법** — `true`(전체) · 단축형 `{"owner":"$uid","archived":false}`(모두 일치) ·
+`{"column":"level","op":"gte","value":3}` (`eq neq gt gte lt lte in is`, `is` 는 `null` 만) · `{"and":[...]}` `{"or":[...]}` `{"not":{...}}`.
+변수는 `"$uid"`(로그인한 사용자 id, anon 이면 NULL) 하나뿐이며, NULL 은 어떤 값과도 같지 않습니다 (SQL 과 동일: `owner = NULL` 은 거짓).
+
+**동작 방식**
+
+- 조회/수정/삭제의 `where` 는 **SQL 에 주입**되어 DB 가 필터링합니다 (`Content-Range` 의 count 도 보이는 행만 셉니다).
+- `check` 는 쓰기 직후 DB 가 돌려준 **실제 저장 행**에 대해 검사하고, 위반하면 **트랜잭션 전체를 롤백**하며 `403 policy_violation` 을 돌려줍니다 (일괄 INSERT 도 전부 취소).
+- 다른 사람의 행을 `PATCH`/`DELETE` 하면 에러가 아니라 "일치하는 행 없음"으로 처리됩니다 (Postgres RLS 와 동일).
+- `Prefer: return=representation` 은 **select 규칙도 필요**하며 돌려주는 행은 select 규칙으로 걸러집니다. 쓰기를 통해 읽을 수 없는 행을 엿볼 수 없습니다.
+- upsert(`resolution=merge-duplicates`)는 insert **와** update 규칙이 모두 있어야 하고, 결과 행이 두 `check` 를 모두 만족해야 합니다. 남의 행과 키가 충돌하면 403.
+- 정책이 참조하는 컬럼을 삭제하거나 이름을 바꾸는 변경은 `422 column_in_use_by_policy` 로 거부됩니다. 테이블 이름을 바꾸면 정책이 따라가고, 테이블을 삭제하면 정책도 삭제됩니다 (같은 이름으로 다시 만든 테이블이 옛 정책을 물려받지 않도록).
+
+예: 리더보드 (누구나 읽기, 로그인한 사용자만 기록, 본인 기록만 삭제, 수정 불가)
+
+```json
+{
+  "select": { "roles": ["anon", "authenticated"], "where": true },
+  "insert": { "roles": ["authenticated"], "set": { "user_id": "$uid" }, "check": { "column": "time_ms", "op": "gte", "value": 1000 } },
+  "delete": { "roles": ["authenticated"], "where": { "user_id": "$uid" } }
+}
+```
 
 ### 오류 형식
 

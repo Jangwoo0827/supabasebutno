@@ -87,6 +87,18 @@ export class TableService {
       }
       if (cols.size === 0) throw unprocessable('no_columns_left', 'A table must keep at least one column');
 
+      // A policy that names a column which disappears would silently stop protecting (or
+      // wrongly expose) the table, so such changes are refused until the policy is updated.
+      const policy = await tx.get<{ columns: string }>('SELECT columns FROM _policies WHERE table_name = ?', [name]);
+      if (policy) {
+        const used = new Set(JSON.parse(policy.columns) as string[]);
+        const touched = [...(input.rename_columns ?? []).map((r) => r.from), ...(input.drop_columns ?? [])];
+        const blocking = touched.find((c) => used.has(c));
+        if (blocking) {
+          throw unprocessable('column_in_use_by_policy', `Column "${blocking}" is used by this table's access policy. Update the policy first.`);
+        }
+      }
+
       let finalName = name;
       if (input.rename_to && input.rename_to !== name) {
         if (await d.describeTable(tx, input.rename_to)) {
@@ -108,6 +120,7 @@ export class TableService {
           throw err;
         }
       }
+      if (finalName !== name) await tx.run('UPDATE _policies SET table_name = ? WHERE table_name = ?', [finalName, name]);
       return (await d.describeTable(tx, finalName))!;
     });
   }
@@ -117,6 +130,8 @@ export class TableService {
     await this.db.transaction(async (tx) => {
       if (!(await this.driver.describeTable(tx, name))) throw notFound('Table');
       await tx.exec(this.driver.dropTableSql(name));
+      // A policy outliving its table would silently apply to a different table created under the same name.
+      await tx.run('DELETE FROM _policies WHERE table_name = ?', [name]);
     });
   }
 }
