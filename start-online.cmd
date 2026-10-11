@@ -12,7 +12,7 @@ if errorlevel 1 (
   echo Server already running on port 8787 - skipping.
 )
 
-tasklist /FI "IMAGENAME eq ngrok.exe" | find /I "ngrok.exe" >nul
+tasklist /FI "IMAGENAME eq ngrok.exe" | findstr /I "ngrok.exe" >nul
 if errorlevel 1 (
   echo Starting the tunnel...
   start "supabasebutno tunnel" cmd /k "npm run tunnel"
