@@ -90,6 +90,22 @@ export async function createApp(config: Config, overrides: AppOverrides = {}): P
     app.use('*', (c, next) => (c.req.path.startsWith('/admin') ? next() : corsMiddleware(c, next)));
   }
 
+  // The admin API is same-origin only, unless specific pages (e.g. the dashboard on GitHub Pages) are listed in
+  // ADMIN_CORS_ORIGINS. Those pages authenticate with the Bearer token, never with cookies, so credentials stay off.
+  if (config.adminCorsOrigins.length > 0) {
+    app.use(
+      '/admin/*',
+      cors({
+        origin: config.adminCorsOrigins,
+        allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+        allowHeaders: ['authorization', 'content-type', 'prefer', 'x-upsert', 'x-sbb-csrf'],
+        exposeHeaders: ['content-range', 'retry-after'],
+        credentials: false,
+        maxAge: 600,
+      }),
+    );
+  }
+
   // JSON requests are small; file uploads stream through their own size limits (see storage/service.ts).
   const jsonLimit = bodyLimit({
     maxSize: config.maxJsonBytes,

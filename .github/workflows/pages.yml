@@ -1,0 +1,43 @@
+# Publishes the admin dashboard to GitHub Pages.
+#
+# One-time setup (repository settings):
+#   1. Settings -> Pages -> Build and deployment -> Source: "GitHub Actions"
+#   2. Settings -> Secrets and variables -> Actions -> Variables -> New repository variable
+#        SBB_API_URL = https://your-api-server.example.com        (recommended: pins the page to YOUR server)
+#   3. Run this workflow from the Actions tab (it is manual on purpose, so nothing is published by accident).
+# On the server set ADMIN_CORS_ORIGINS=https://<your-name>.github.io  (see .env.example).
+name: Dashboard (GitHub Pages)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build the dashboard
+        run: node scripts/build-pages.mjs pages-dist
+        env:
+          SBB_API_URL: ${{ vars.SBB_API_URL }}
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages-dist
+      - id: deployment
+        uses: actions/deploy-pages@v4

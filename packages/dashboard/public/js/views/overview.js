@@ -1,4 +1,4 @@
-import { api } from '../api.js';
+import { api, apiOrigin } from '../api.js';
 import { actionButton, confirmDialog, copyText, guard, h, toast } from '../ui.js';
 
 function keyBox(label, value, note, danger) {
@@ -46,7 +46,7 @@ export async function renderOverview(root, project) {
     }
   }, { cls: 'danger' });
 
-  const origin = location.origin;
+  const origin = apiOrigin(); // the API server, which differs from this page when the dashboard is hosted elsewhere
   const snippet = `<script src="supabasebutno.min.js"></script>\n<script>\n  const client = supabasebutno.createClient('${origin}', 'ANON_KEY');\n  client.from('todos').select('*').then(({ data, error }) => console.log(data, error));\n</script>`;
 
   root.append(h('div', { class: 'stack' },

@@ -13,6 +13,7 @@
   "scripts": {
     "dev": "npm run dev -w @supabasebutno/server",
     "build": "npm run build --workspaces --if-present",
+    "build:pages": "node scripts/build-pages.mjs pages-dist",
     "start": "npm run start -w @supabasebutno/server",
     "backup": "npm run backup -w @supabasebutno/server --",
     "restore": "npm run restore -w @supabasebutno/server --",

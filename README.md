@@ -45,6 +45,24 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 - 데이터 편집기와 파일 화면은 `service_role` 권한으로 동작해서 **접근 정책을 우회**합니다 (관리자 도구이므로).
 - 외부 접근을 막고 싶다면 리버스 프록시에서 `/admin*`, `/dashboard*` 를 내 IP 에만 열어 두세요 ([deploy/Caddyfile.example](deploy/Caddyfile.example)).
 
+### GitHub Pages 에서 대시보드 호스팅
+
+대시보드는 정적 파일이라 GitHub Pages 에 올릴 수 있습니다. 단, **페이지(`https://<이름>.github.io`)와 API 서버는 다른 출처**라서 서버 쪽 설정이 필요합니다. 이 방식에서는 쿠키 대신 로그인 화면에서 **API 주소 + `ADMIN_TOKEN`** 을 입력하고, 토큰은 그 탭의 `sessionStorage` 에만 보관(탭을 닫으면 삭제)한 채 `Authorization: Bearer` 로 보냅니다.
+
+1. **API 서버를 HTTPS 로 공개** — GitHub Pages 는 HTTPS 라서 `http://` 서버는 브라우저가 막습니다 (localhost 제외). [배포](#배포-docker) 장의 Caddy 예시를 쓰세요. 대시보드의 API 호출은 Pages 서버가 아니라 **내 브라우저**가 보내므로, 예시처럼 프록시에서 `/admin*` 을 내 IP 로만 허용해도 그대로 동작하고 오히려 권장합니다 (집 IP 가 바뀌면 설정도 바꿔야 함).
+2. **서버 `.env`**: `ADMIN_CORS_ORIGINS=https://<이름>.github.io` — 이 출처의 페이지만 `/admin` 을 호출할 수 있습니다 (정확한 출처만, `*`·경로 불가. 설정하지 않으면 `/admin` 은 같은 출처 전용 그대로).
+3. **저장소 설정**: Settings → Pages → Source 를 **GitHub Actions** 로, Settings → Secrets and variables → Actions → **Variables** 에 `SBB_API_URL=https://내-api-서버` 추가.
+4. Actions 탭에서 **Dashboard (GitHub Pages)** 워크플로를 수동 실행합니다 ([.github/workflows/pages.yml](.github/workflows/pages.yml)). 실수로 공개되지 않도록 일부러 수동 실행입니다.
+
+로컬에서 미리 만들어 보려면 `SBB_API_URL=https://… npm run build:pages` → `pages-dist/`. [scripts/build-pages.mjs](scripts/build-pages.mjs) 가 `index.html` 에 원격 모드 표시와 CSP `<meta>` 를 넣습니다 (GitHub Pages 는 응답 헤더를 못 보내기 때문). `SBB_API_URL` 을 지정하면 CSP 의 `connect-src` 가 **그 서버 하나로 고정**되어, 페이지가 변조되더라도 토큰을 다른 서버로 보내는 연결은 브라우저가 막습니다. 지정하지 않으면 로그인 화면에서 입력한 아무 `https://` 서버에 연결할 수 있어 이 보호가 약해지니 **지정을 권장**합니다. 주소는 `https://`(또는 localhost 의 `http://`)만 허용하고, 아니면 빌드가 실패합니다.
+
+**Pages 방식의 위험 (같은 출처 쿠키 방식보다 약한 점)**
+
+- 토큰이 **GitHub 에서 내려받은 JavaScript 가 도는 페이지**에 입력됩니다. 저장소/계정이 탈취되면 배포된 코드가 바뀌어 토큰을 훔칠 수 있습니다. GitHub 계정에 2단계 인증을 켜고, 저장소 쓰기 권한을 최소로 하고, `SBB_API_URL` 로 CSP 를 고정하세요.
+- 쿠키 방식은 토큰이 브라우저에 남지 않지만, 이 방식은 탭이 열려 있는 동안 `sessionStorage` 에 있습니다. 공용 PC 에서는 쓰지 말고 끝나면 로그아웃하세요.
+- `/admin` 이 인터넷의 다른 출처에서 호출 가능해지므로 `ADMIN_TOKEN` 이 약하면 위험합니다 (실패는 IP 당 10회/15분으로 제한되지만 분산 공격은 막지 못함). 32자 이상 무작위 값을 쓰세요.
+- 더 안전하게 쓰려면 Pages 대신 서버가 직접 서빙하는 `/dashboard/` 를 쓰고 프록시로 내 IP 만 허용하는 방식이 낫습니다.
+
 ## 환경변수
 
 | 이름 | 기본값 | 설명 |

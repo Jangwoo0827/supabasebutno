@@ -28,6 +28,7 @@ const envSchema = z
     STORAGE_USER_QUOTA_BYTES: z.coerce.number().int().positive().default(100 * MIB),
     STORAGE_PROJECT_QUOTA_BYTES: z.coerce.number().int().positive().default(2048 * MIB),
     REALTIME_MAX_CONNECTIONS: z.coerce.number().int().positive().default(500),
+    ADMIN_CORS_ORIGINS: z.string().default(''),
   })
   .refine((e) => e.ADMIN_TOKEN !== e.JWT_MASTER_SECRET, {
     path: ['JWT_MASTER_SECRET'],
@@ -55,6 +56,8 @@ export interface Config {
   storageProjectQuotaBytes: number;
   /** Simultaneous WebSocket connections the server accepts. */
   realtimeMaxConnections: number;
+  /** Exact origins (e.g. https://me.github.io) whose pages may call /admin with a Bearer token. Empty = /admin is same-origin only. */
+  adminCorsOrigins: string[];
 }
 
 export class ConfigError extends Error {}
@@ -70,7 +73,25 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const origins = e.CORS_ORIGINS.split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+  const adminOrigins = e.ADMIN_CORS_ORIGINS.split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((o) => {
+      // Exactly an origin: scheme + host (+ port). No wildcard, no path: this list opens the ADMIN API to those pages.
+      let url: URL | undefined;
+      try {
+        url = new URL(o);
+      } catch {
+        /* handled below */
+      }
+      const plainHost = url && /^([a-z0-9-]+\.)*[a-z0-9-]+$|^\[[0-9a-f:]+\]$/i.test(url.hostname); // rules out "*.example.com" look-alikes
+      if (!url || !plainHost || !['http:', 'https:'].includes(url.protocol) || url.origin !== o || o === 'null') {
+        throw new ConfigError(`Invalid configuration:\n  - ADMIN_CORS_ORIGINS: "${o}" must be an exact origin like https://you.github.io (no wildcard, no path)\nSee .env.example`);
+      }
+      return o;
+    });
   return {
+    adminCorsOrigins: adminOrigins,
     port: e.PORT,
     host: e.HOST,
     dataDir: resolve(e.DATA_DIR ?? DEFAULT_DATA_DIR),
