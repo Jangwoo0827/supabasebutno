@@ -1,5 +1,5 @@
 import { Hono, type Context } from 'hono';
-import { badRequest } from '../core/errors.js';
+import { AppError, badRequest } from '../core/errors.js';
 import { clientIp } from '../http/client-ip.js';
 import { parseJson, parseOptionalJson } from '../http/helpers.js';
 import { requireUser } from '../http/auth.js';
@@ -30,6 +30,7 @@ export function authRoutes(deps: Deps): Hono<AppEnv> {
   const ipOf = (c: Context<AppEnv>) => `${c.get('project').id}:${clientIp(c, config.trustProxyHops)}`;
 
   auth.post('/signup', async (c) => {
+    if (!config.signupEnabled) throw new AppError(403, 'signup_disabled', 'Sign-up is turned off on this server');
     countAttempt(limits.signupIp, ipOf(c));
     const input = await parseJson(c, signUpSchema);
     return c.json(await service.signUp(await envFor(c), input), 201);

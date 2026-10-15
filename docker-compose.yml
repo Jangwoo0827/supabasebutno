@@ -1,3 +1,5 @@
+# 실행:    docker compose up -d --build
+# 터널 포함(Cloudflare): docker compose --profile cloudflare up -d   (README "Cloudflare Tunnel" 참고)
 # Run:     docker compose up -d --build
 # Logs:    docker compose logs -f
 # Backup:  docker compose run --rm backup          (writes into ./backups)
@@ -8,7 +10,7 @@ services:
   sbb:
     build: .
     image: supabasebutno:local
-    restart: unless-stopped
+    restart: always # PC/서버가 재부팅되거나 프로세스가 죽어도 항상 다시 시작
     env_file: .env # ADMIN_TOKEN, JWT_MASTER_SECRET, CORS_ORIGINS, ...
     environment:
       HOST: 0.0.0.0
@@ -21,6 +23,22 @@ services:
     tmpfs:
       - /tmp
     cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+  # Cloudflare Tunnel: 바깥에서 오는 요청을 이 컴퓨터로 전달합니다 (포트를 열 필요 없음, HTTPS 는 Cloudflare 가 처리).
+  # 켜려면 .env 에 CLOUDFLARE_TUNNEL_TOKEN 을 넣고 `docker compose --profile cloudflare up -d`.
+  # Cloudflare 대시보드의 Public Hostname 서비스 주소는  http://sbb:8787  로 설정합니다.
+  # 이때 .env 의 TRUST_PROXY_HOPS=1 이어야 속도 제한이 실제 접속자 IP 를 봅니다.
+  cloudflared:
+    profiles: [cloudflare]
+    image: cloudflare/cloudflared:latest
+    restart: always
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?.env 에 CLOUDFLARE_TUNNEL_TOKEN 을 넣어 주세요}
+    depends_on:
+      - sbb
     security_opt:
       - no-new-privileges:true
 

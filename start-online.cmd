@@ -12,15 +12,17 @@ if errorlevel 1 (
   echo Server already running on port 8787 - skipping.
 )
 
-tasklist /FI "IMAGENAME eq ngrok.exe" | findstr /I "ngrok.exe" >nul
+tasklist | findstr /I /C:"ngrok.exe" /C:"cloudflared.exe" >nul
 if errorlevel 1 (
   echo Starting the tunnel...
   start "supabasebutno tunnel" cmd /k "npm run tunnel"
 ) else (
-  echo ngrok is already running - skipping.
+  echo A tunnel (ngrok / cloudflared) is already running - skipping.
 )
 
 echo.
-echo Online is up: https://laurel-spry-gladly.ngrok-free.dev
+set "PUBLIC_URL="
+if exist .env for /f "tokens=1,* delims==" %%a in ('findstr /B /C:"PUBLIC_URL=" .env') do set "PUBLIC_URL=%%b"
+if defined PUBLIC_URL (echo Online: %PUBLIC_URL%) else (echo Online is up. Set PUBLIC_URL in .env to show your address here.)
 echo Keep the two new windows open (minimize them). You can close this one.
 pause >nul

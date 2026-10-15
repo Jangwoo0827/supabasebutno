@@ -11,3 +11,6 @@ data/
 *.sqlite-shm
 *.log
 .DS_Store
+
+# 백업 (비밀번호 해시와 사용자 데이터가 들어 있음 — 절대 커밋 금지)
+backups/

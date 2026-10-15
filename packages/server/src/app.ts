@@ -6,6 +6,7 @@ import { requestId } from 'hono/request-id';
 import { secureHeaders } from 'hono/secure-headers';
 import type { Config } from './config.js';
 import { AppError } from './core/errors.js';
+import { clientIp } from './http/client-ip.js';
 import { createLimits } from './auth/limits.js';
 import { ConsoleMailer, type Mailer } from './auth/mailer.js';
 import { authRoutes } from './auth/routes.js';
@@ -77,14 +78,27 @@ export async function createApp(config: Config, overrides: AppOverrides = {}): P
     if (!c.res.headers.has('Cross-Origin-Resource-Policy')) c.header('Cross-Origin-Resource-Policy', 'same-origin');
   });
 
+  // ADMIN_ALLOWED_IPS: the admin API and dashboard answer only to listed addresses; everyone else sees a plain 404
+  // (same as a path that does not exist, so the dashboard's presence is not revealed). "::ffff:1.2.3.4" counts as "1.2.3.4".
+  if (config.adminAllowedIps.length > 0) {
+    const allowed = new Set(config.adminAllowedIps);
+    app.use('*', async (c, next) => {
+      const path = c.req.path;
+      if (path === '/admin' || path.startsWith('/admin/') || path === '/dashboard' || path.startsWith('/dashboard/')) {
+        const ip = clientIp(c, config.trustProxyHops).replace(/^::ffff:/i, '');
+        if (!allowed.has(ip)) return onNotFound(c);
+      }
+      await next();
+    });
+  }
+
   // CORS for data APIs only. /admin is never exposed cross-origin.
   if (config.corsOrigins === 'any' || config.corsOrigins.length > 0) {
     const origins = config.corsOrigins;
     const corsMiddleware = cors({
       origin: origins === 'any' ? '*' : origins,
       allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      // ngrok-skip-browser-warning: lets browsers get past ngrok's free-plan interstitial page (harmless elsewhere)
-      allowHeaders: ['authorization', 'apikey', 'content-type', 'prefer', 'x-client-info', 'x-upsert', 'ngrok-skip-browser-warning'],
+      allowHeaders: ['authorization', 'apikey', 'content-type', 'prefer', 'x-client-info', 'x-upsert'],
       exposeHeaders: ['content-range', 'content-length', 'etag', 'x-request-id'],
       maxAge: 600,
     });

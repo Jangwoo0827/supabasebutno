@@ -34,6 +34,8 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 | `npm test` | 서버 + SDK 전체 테스트 (실제 서버를 띄워서 실행) |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run backup -- <폴더>` / `npm run restore -- <백업폴더>` | [백업·복원](#백업과-복원) (먼저 `npm run build`) |
+| `npm run backup:rotate` | 백업 → 날짜별 `.tar.gz` 압축 → 최근 7개만 보관. [정기 백업](#정기-백업-날짜별-압축--최근-7개) |
+| `npm run tunnel` | 서버를 인터넷에 여는 터널 실행 (`.env` 의 `TUNNEL=ngrok` 또는 `cloudflared`) |
 
 ## 내 PC에서 바로 쓰기 (가장 쉬운 방법)
 
@@ -56,7 +58,7 @@ npm run sbb -- --help                                        # status list keys 
 - 컬럼 문법: `이름:타입[:pk][:nn][:unique][:default=값|now|uuid]` (타입: text integer real boolean json timestamp uuid). `pk` 가 없으면 `id integer` 기본 키가 자동으로 추가됩니다.
 - 정책 프리셋: `public-read` · `authenticated` · `owner` · `leaderboard` (`owner=컬럼`, `leaderboard=컬럼` 으로 사용자 id 컬럼 지정). JSON 파일 경로를 줘도 됩니다.
 - **테이블을 만들어도 정책이 없으면 `service_role` 키만 쓸 수 있습니다.** `sbb tables <프로젝트>` 가 정책이 없는 테이블을 `NO POLICY` 로 표시합니다.
-- **내 PC 에서만 도는 서버**를 쓰는 앱은 PC 가 꺼져 있으면 동작하지 않고, 다른 사람은 접속할 수 없습니다. GitHub Pages/itch.io 에 올려 다른 사람이 쓰는 앱에는 공개 HTTPS 서버가 필요합니다 (임시로는 `ngrok http 8787`, 상시 운영은 [배포](#배포-docker) 참고).
+- **내 PC 에서만 도는 서버**를 쓰는 앱은 PC 가 꺼져 있으면 동작하지 않고, 다른 사람은 접속할 수 없습니다. GitHub Pages/itch.io 에 올려 다른 사람이 쓰는 앱에는 공개 HTTPS 서버가 필요합니다 (임시로는 `npm run tunnel` / `start-online.cmd`, 상시 운영은 [배포](#배포-docker)와 [상시 운영으로 옮기기](#상시-운영으로-옮기기) 참고).
 - PC 를 켤 때 자동으로 시작하고 싶다면 `start-local.cmd` 의 바로가기를 시작프로그램 폴더(`shell:startup`)에 넣으면 됩니다.
 
 ## 관리자 대시보드 (Phase 7)
@@ -104,6 +106,11 @@ npm run sbb -- --help                                        # status list keys 
 | `STORAGE_USER_QUOTA_BYTES` | `104857600` | 로그인 사용자 1명이 프로젝트에 저장할 수 있는 총량 (100 MiB) |
 | `STORAGE_PROJECT_QUOTA_BYTES` | `2147483648` | 프로젝트 전체 저장 총량 (2 GiB) |
 | `REALTIME_MAX_CONNECTIONS` | `500` | 동시에 받아주는 WebSocket 연결 수 |
+| `ADMIN_ALLOWED_IPS` | (빈 값 = 제한 없음) | `/admin`, `/dashboard` 에 접근할 수 있는 IP (쉼표 구분, 단일 IP). 그 외는 404. 프록시 뒤에서는 `TRUST_PROXY_HOPS` 필수 |
+| `SIGNUP_ENABLED` | `true` | `false` 면 새 가입을 막음 (기존 사용자는 로그인 가능) |
+| `PUBLIC_URL` | (빈 값) | 공개 주소 안내용 (`start-online.cmd` 가 표시만 함, 코드는 이 값에 의존하지 않음) |
+| `TUNNEL` / `CLOUDFLARE_TUNNEL_TOKEN` | `ngrok` / (빈 값) | `npm run tunnel` 이 쓰는 터널 종류와 Cloudflare 토큰 (비밀) |
+| `BACKUP_KEEP` | `7` | `npm run backup:rotate` 가 남길 백업 개수 |
 
 ## 구조
 
@@ -560,7 +567,52 @@ npm run restore -- ./backups/backup-20261011-131153 --force    # --force: 기존
 - 복원은 먼저 **모든 DB 를 체크섬과 `PRAGMA integrity_check` 로 검증**하고, 새 데이터를 `<DATA_DIR>.restoring` 에 완성한 뒤 `rename` 으로 교체합니다. 중간에 실패해도 기존 데이터는 그대로입니다. 데이터가 이미 있으면 `--force` 가 필요하고, 그때도 **삭제하지 않고** `<DATA_DIR>.before-restore-<시각>` 으로 옮겨 둡니다. 위조된 manifest(경로 이탈 이름)는 거부합니다.
 - **백업에 들어 있지 않은 것: `JWT_MASTER_SECRET`, `ADMIN_TOKEN`.** 마스터 시크릿을 잃으면 복원해도 발급했던 API 키가 전부 달라집니다 (키는 마스터 시크릿에서 파생됨). `.env` 를 비밀번호 관리자 등에 따로 보관하세요.
 - 백업에는 **비밀번호 해시와 사용자 데이터**가 들어 있습니다. 민감한 파일로 취급하고 (암호화된 위치에 보관) 저장소에 올리지 마세요.
-- 정기 백업은 cron / 작업 스케줄러에 `npm run backup -- <폴더>` 를 걸고, 오래된 `backup-*` 폴더를 정리하세요 (자동 보존 정책은 없습니다). **복원 연습을 한 번은 해 보세요.**
+- 정기 백업은 아래 [정기 백업](#정기-백업-날짜별-압축--최근-7개)을 쓰세요. **복원 연습을 한 번은 해 보세요.**
+
+### 정기 백업 (날짜별 압축 + 최근 7개)
+
+```bash
+npm run build
+npm run backup:rotate                 # ./backups/backup-<날짜-시각>.tar.gz 를 만들고 최근 7개만 남김
+npm run backup:rotate -- --keep 14    # 14개 보관 (또는 .env 에 BACKUP_KEEP=14)
+npm run backup:rotate -- --dir D:\backups     # 다른 폴더에 저장
+npm run backup:rotate -- --docker     # Docker Compose 로 실행 중인 서버 (docker compose --profile tools run --rm backup 사용)
+```
+
+- 압축은 시스템의 `tar` 를 씁니다 (Windows 10+, macOS, Linux 기본 제공). 압축 파일이 만들어진 것을 확인한 **뒤에만** 원본 폴더를 지우고, 오래된 `.tar.gz` 부터 삭제합니다. `backups/` 는 `.gitignore` 에 들어 있습니다 (비밀번호 해시가 들어 있으므로 절대 커밋하지 마세요).
+- **압축 파일에서 복원**: 풀고 → 검사 → 복원 (서버를 먼저 끄세요).
+
+```bash
+tar -xzf backups/backup-20261015-143034.tar.gz -C backups
+npm run restore -- backups/backup-20261015-143034 --verify
+npm run restore -- backups/backup-20261015-143034 --force
+```
+
+**Linux / macOS / VM — cron 등록** (`crontab -e`, 매일 새벽 3시):
+
+```cron
+0 3 * * * cd /home/ubuntu/supabasebutno && /usr/bin/npm run backup:rotate >> backups/cron.log 2>&1
+# Docker Compose 로 실행 중이면:
+# 0 3 * * * cd /home/ubuntu/supabasebutno && /usr/bin/npm run backup:rotate -- --docker >> backups/cron.log 2>&1
+```
+
+호스트에 Node 가 없는 서버라면 같은 일을 셸로 할 수 있습니다 (`./backups` 는 uid 1000 이 쓸 수 있어야 함: `mkdir -p backups && sudo chown 1000:1000 backups`):
+
+```bash
+cd ~/supabasebutno && docker compose --profile tools run --rm backup \
+  && cd backups && for d in backup-*/; do tar -czf "${d%/}.tar.gz" "${d%/}" && rm -rf "$d"; done \
+  && ls -1 backup-*.tar.gz | sort | head -n -7 | xargs -r rm --
+```
+
+**Windows — 작업 스케줄러** (PowerShell, 매일 새벽 3시):
+
+```powershell
+$a = New-ScheduledTaskAction -Execute "npm.cmd" -Argument "run backup:rotate" -WorkingDirectory "C:\Users\<사용자>\Desktop\VScode\supabasebutno"
+$t = New-ScheduledTaskTrigger -Daily -At 3am
+Register-ScheduledTask -TaskName "supabasebutno-backup" -Action $a -Trigger $t
+```
+
+- 같은 PC 의 디스크에만 두면 디스크가 고장 날 때 같이 사라집니다. 최근 백업 하나는 **다른 곳**(외장 디스크, 클라우드 드라이브 등)에도 복사해 두세요.
 
 ## 배포 (Docker)
 
@@ -574,9 +626,137 @@ docker compose stop sbb && docker compose --profile tools run --rm restore /back
 
 - 이미지: `node:22-bookworm-slim` 기반 멀티 스테이지. 런타임에는 **운영 의존성만** 설치하고(컴파일러 없음), 비루트 `node` 사용자로 실행합니다. 데이터는 `/data` 볼륨입니다. 컨테이너는 읽기 전용 파일시스템 + `cap_drop: ALL` + `no-new-privileges` 로 돌립니다.
 - Alpine 이 아니라 Debian 인 이유: `better-sqlite3`, `argon2` 가 glibc 용 미리 빌드된 바이너리(x64, arm64)를 패키지에 담아 배포하기 때문입니다. `npm ci --ignore-scripts` 로 컴파일을 시도하지 않게 했습니다.
+- 재시작 정책은 `restart: always` 입니다 (프로세스가 죽거나 서버가 재부팅돼도 항상 다시 시작). 데이터는 이름 있는 볼륨 `sbb-data`(`/data`)에 있어 컨테이너를 다시 만들어도 남습니다. 볼륨을 지우는 `docker compose down -v` 는 **데이터가 사라지므로 쓰지 마세요.**
 - 헬스체크는 `GET /health`. `docker stop` 의 SIGTERM 에서 연결을 닫고 DB 를 정리한 뒤 종료합니다.
 - **TLS 는 직접 처리하지 않습니다.** 인터넷에 열려면 Caddy/nginx/Cloudflare Tunnel 등을 앞에 두세요. 예: [deploy/Caddyfile.example](deploy/Caddyfile.example) (자동 HTTPS, WebSocket 통과). 프록시를 두면 `.env` 에 `TRUST_PROXY_HOPS=1` 을 설정해야 rate limit 이 실제 클라이언트 IP 를 봅니다.
 - 이 저장소의 Dockerfile 은 Docker 가 설치되지 않은 PC 에서 작성했습니다. 이미지를 직접 빌드해 본 것은 아니고, 같은 단계(운영 의존성만 설치 → 빌드 결과물로 서버·대시보드·백업 실행)를 임시 폴더에서 재현해 확인했습니다. 첫 빌드에서 문제가 있으면 이슈로 알려 주세요.
+
+## 상시 운영으로 옮기기
+
+지금은 "내 PC + ngrok" 입니다. 이 방식은 **PC 가 꺼지면 서비스도 꺼집니다.** 다음 두 가지 중 하나로 옮길 수 있고, 코드는 그대로이며 `.env` 와 터널/프록시만 바뀝니다.
+
+| | (a) Cloudflare Tunnel | (b) Oracle/GCP 무료 VM + Caddy |
+|---|---|---|
+| 서버가 도는 곳 | **내 PC (또는 집 서버)** — 꺼져 있으면 서비스도 꺼짐 | 클라우드 VM — **PC 와 무관하게 24시간** |
+| HTTPS | Cloudflare 가 처리 | Caddy 가 Let's Encrypt 로 자동 |
+| 포트 개방 | 필요 없음 (바깥으로 나가는 연결만 사용) | 80/443 열어야 함 |
+| 고정 주소 | **내 도메인 필요** (Cloudflare 에 등록) | 도메인 필요 (VM 의 고정 IP 로 연결) |
+| 비용 | 도메인 값(연 1~2만 원대) | 도메인 값 + 무료 VM (결제 수단 등록 필요) |
+| 난이도 | 쉬움 | 중간 |
+
+공통 준비:
+
+1. `.env` 에서 `CORS_ORIGINS` 를 **내 프론트엔드 주소만** 적으세요 (예: `https://jangwoo0827.github.io`). `*` 는 쓰지 마세요.
+2. 프록시/터널 뒤에서는 `TRUST_PROXY_HOPS=1` (속도 제한이 실제 접속자 IP 를 보게 함).
+3. `PUBLIC_URL=https://api.내도메인.com` 을 적어 두면 `start-online.cmd` 안내에 표시됩니다 (코드가 이 값에 의존하지는 않음).
+4. 앱/게임의 서버 주소만 새 주소로 바꾸면 됩니다 (SDK 의 `createClient(url, anonKey)` 첫 번째 인자). **API 키는 서버의 `JWT_MASTER_SECRET` 에서 나오므로, 같은 값을 쓰면 기존 anon 키가 그대로 유효합니다.**
+
+### (a) Cloudflare Tunnel 로 옮기기
+
+> 아래 단계 중 **계정 만들기·도메인 등록·대시보드 조작은 직접** 하셔야 합니다 (화면 이름은 Cloudflare 가 바꿀 수 있어 약간 다를 수 있습니다).
+
+1. Cloudflare 계정을 만들고 **도메인을 추가**합니다 (도메인 등록 업체에서 네임서버를 Cloudflare 것으로 바꿈). 도메인이 없으면 고정 주소를 쓸 수 없고, 7번의 임시 주소만 가능합니다.
+2. Cloudflare **Zero Trust** 대시보드(https://one.dash.cloudflare.com) → **Networks → Tunnels → Create a tunnel** → **Cloudflared** → 이름 입력(예: `sbb`).
+3. 설치 방법 화면에서 **Docker** 를 고르면 명령에 `--token eyJ...` 가 보입니다. **그 토큰만** 복사하세요 (비밀번호처럼 취급).
+4. `.env` 에 추가:
+   ```
+   TUNNEL=cloudflared
+   CLOUDFLARE_TUNNEL_TOKEN=<복사한 토큰>
+   TRUST_PROXY_HOPS=1
+   ```
+5. 터널 화면의 **Public Hostname** 탭에서 `api.내도메인.com` 을 추가하고 서비스는 `HTTP` / 주소는 아래 중 하나로 설정:
+   - Docker Compose 로 실행: `sbb:8787`
+   - 호스트에서 직접 실행 (`npm run local`): `localhost:8787`
+6. 실행 (둘 중 하나):
+   ```bash
+   # Docker Compose (서버 + 터널이 함께 항상 재시작)
+   docker compose --profile cloudflare up -d --build
+   # Docker 없이: Windows PowerShell 에서 cloudflared 를 서비스로 설치 (재부팅해도 자동 시작)
+   winget install Cloudflare.cloudflared
+   cloudflared service install <토큰>
+   # Linux 는:  sudo cloudflared service install <토큰>
+   ```
+7. (테스트용) 도메인 없이 임시 주소만 시험: `.env` 에 `TUNNEL=cloudflared` 만 두고 `npm run tunnel` → 화면에 `https://무작위.trycloudflare.com` 이 나옵니다. 실행할 때마다 바뀝니다.
+8. 확인 (다른 네트워크, 예를 들어 휴대폰 데이터에서도 해 보세요):
+   ```bash
+   curl https://api.내도메인.com/health          # {"status":"ok"}
+   curl -i https://api.내도메인.com/dashboard/   # 404 여야 함 (아래 "관리자 접근 제한" 설정 후)
+   ```
+9. ngrok 정리: 실행 중인 ngrok 창을 닫고, 앱의 서버 주소를 새 주소로 교체합니다. `.env` 의 `TUNNEL` 을 `cloudflared` 로 바꿔 두면 `start-online.cmd` 도 그대로 동작합니다.
+
+- Cloudflare 쪽에는 ngrok 의 `deploy/ngrok-policy.yml` 같은 경로 차단이 없으므로 **관리자 보호는 서버의 `ADMIN_ALLOWED_IPS`** 로 합니다 ([보안 체크리스트](#보안-체크리스트-상시-운영)). 더 강하게 하려면 Cloudflare **Access** 로 `api.내도메인.com/admin*`, `/dashboard*` 에 로그인(이메일 인증)을 걸 수 있습니다.
+- 이 방식도 **서버가 도는 PC 가 켜져 있어야** 합니다. PC 와 무관하게 24시간 돌리려면 (b) 입니다.
+
+### (b) Oracle/GCP 무료 VM + Caddy 로 옮기기
+
+> **계정 생성·결제 수단 등록·VM 만들기·DNS 설정은 직접** 하셔야 합니다. 무료 한도와 조건은 바뀔 수 있으니 가입 화면의 안내를 확인하세요.
+
+1. **VM 만들기**: Oracle Cloud *Always Free* (Ampere A1 또는 AMD Micro) 또는 GCP *e2-micro* (무료 리전)에서 **Ubuntu 22.04 이상** VM 을 만들고 SSH 키를 등록합니다. **고정(예약) 공인 IP** 를 붙이세요.
+2. **방화벽**: 인바운드는 **22(SSH, 가능하면 내 IP 만) · 80 · 443 만** 엽니다. **8787 은 절대 열지 않습니다.** (Oracle 은 VCN 의 Security List/NSG 와 VM 안의 iptables 두 곳, GCP 는 VPC 방화벽 규칙)
+3. **DNS**: 도메인의 `A` 레코드 `api` → VM 의 공인 IP.
+4. **VM 에 접속해 Docker 설치**:
+   ```bash
+   ssh ubuntu@<VM 공인 IP>
+   curl -fsSL https://get.docker.com | sh
+   sudo usermod -aG docker $USER && newgrp docker
+   ```
+5. **코드와 설정**:
+   ```bash
+   git clone https://github.com/Jangwoo0827/supabasebutno.git && cd supabasebutno
+   cp .env.example .env && chmod 600 .env
+   openssl rand -base64 32 | tr '+/' '-_' | tr -d '='     # 비밀값 생성 (두 번 실행해서 각각 다른 값 사용)
+   nano .env     # ADMIN_TOKEN, JWT_MASTER_SECRET(두 값은 서로 달라야 함), CORS_ORIGINS, TRUST_PROXY_HOPS=1, ADMIN_ALLOWED_IPS
+   ```
+   기존 PC 의 데이터를 옮길 거라면 `JWT_MASTER_SECRET` 은 **PC 의 `.env` 값과 같게** 하세요 (7번).
+6. **Caddy 설치와 HTTPS**:
+   ```bash
+   sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
+   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+   sudo apt update && sudo apt install -y caddy
+   sudo cp deploy/Caddyfile.example /etc/caddy/Caddyfile
+   sudo nano /etc/caddy/Caddyfile        # api.example.com → 내 도메인, 203.0.113.10 → 내 공인 IP
+   sudo systemctl reload caddy
+   ```
+7. **서버 실행** (Compose 가 `restart: always` 라 VM 이 재부팅돼도 자동 시작) — 그리고 **기존 데이터 옮기기**:
+   ```bash
+   docker compose up -d --build
+   # (PC 에서) npm run backup:rotate  →  backups/backup-<시각>.tar.gz 를 VM 으로 복사
+   scp backups/backup-20261015-143034.tar.gz ubuntu@<VM IP>:~/supabasebutno/backups/
+   # (VM 에서)
+   cd ~/supabasebutno/backups && tar -xzf backup-20261015-143034.tar.gz && cd ..
+   docker compose stop sbb
+   docker compose --profile tools run --rm restore /backups/backup-20261015-143034 --force
+   docker compose start sbb
+   ```
+8. **확인**: `curl https://api.내도메인.com/health` → `{"status":"ok"}`. 다른 네트워크에서 `/dashboard/` 가 404 인지도 확인.
+9. **정기 백업 등록**: 위 [정기 백업](#정기-백업-날짜별-압축--최근-7개)의 cron 줄을 VM 에 등록.
+10. 앱의 서버 주소를 새 주소로 바꾸고, PC 의 ngrok/로컬 서버는 끕니다.
+
+## 보안 체크리스트 (상시 운영)
+
+**관리자 접근 제한**
+- [ ] `.env` 의 `ADMIN_ALLOWED_IPS=내공인IP` 로 `/admin`, `/dashboard` 를 내 IP 에서만 열기. 다른 IP 는 (올바른 토큰이 있어도) 평범한 404 를 받습니다. **`TRUST_PROXY_HOPS` 가 프록시 수와 맞아야** 진짜 접속자 IP 로 판단합니다 (터널/Caddy 뒤 = 1). 내 PC 에서 `127.0.0.1` 로 직접 열 때도 쓰려면 `127.0.0.1` 도 같이 적으세요. 집 인터넷은 공인 IP 가 바뀔 수 있으니, 접속이 막히면 서버에 SSH/직접 접속해서 값을 고치세요.
+- [ ] 프록시에서도 한 번 더 막기: Caddy 는 `deploy/Caddyfile.example`, ngrok 은 `deploy/ngrok-policy.yml`, Cloudflare 는 Access.
+- [ ] `ADMIN_CORS_ORIGINS` 는 비워 두기 (GitHub Pages 대시보드를 쓸 때만 그 주소 하나).
+- [ ] `ADMIN_TOKEN` 은 32바이트↑ 무작위 값. 유출됐다면 `.env` 를 바꾸고 서버를 다시 시작하세요.
+
+**CORS**
+- [ ] `CORS_ORIGINS` 에 **내 프론트엔드 주소만** (예: `https://jangwoo0827.github.io`). `*` 금지. 포트나 `http://` 가 다르면 다른 출처이므로, 로컬 테스트 주소(`http://127.0.0.1:8765`)는 **테스트할 때만** 추가하고 끝나면 빼세요.
+
+**포트와 네트워크**
+- [ ] 서버 포트(8787)는 인터넷에 직접 열지 않습니다. Compose 는 `127.0.0.1:8787` 으로만 게시합니다 (**`ports: "8787:8787"` 로 바꾸지 마세요** — Docker 는 ufw 를 우회해 포트를 엽니다).
+- [ ] VM 방화벽은 22(내 IP) · 80 · 443 만. 터널을 쓰면 80/443 도 필요 없습니다.
+- [ ] `HOST` 는 호스트에서 직접 실행할 때 `127.0.0.1` (Docker 안에서만 `0.0.0.0`).
+
+**가입과 계정**
+- [ ] 공개 가입이 필요 없는 앱이면 `SIGNUP_ENABLED=false` (기존 사용자는 로그인 가능). 가입에는 IP 당 시간당 10회 제한이 있지만 완벽한 스팸 방지는 아닙니다.
+- [ ] 비밀번호 재설정 메일: 기본 `ConsoleMailer` 는 토큰을 로그에 찍습니다. 메일을 쓰려면 `Mailer` 구현을 교체하세요 (지금은 재설정 기능을 쓰지 않는 것을 권장).
+
+**비밀값과 백업**
+- [ ] `.env`, `backups/`, 서버 로그를 저장소에 올리지 않기 (`.gitignore` 에 들어 있음). `chmod 600 .env`.
+- [ ] 정기 백업이 돌고, 복원을 한 번 연습했고, 최근 백업 하나는 다른 장소에도 있다.
+- [ ] `JWT_MASTER_SECRET` 은 백업에 없으므로 비밀번호 관리자 등에 따로 보관 (잃으면 모든 API 키가 바뀜).
 
 ## 프로덕션 체크리스트
 

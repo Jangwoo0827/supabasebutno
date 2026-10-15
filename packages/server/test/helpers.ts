@@ -29,6 +29,8 @@ export async function makeTestApp(overrides: Partial<Config> = {}, appOverrides:
     storageProjectQuotaBytes: 20_000_000,
     realtimeMaxConnections: 500,
     adminCorsOrigins: [],
+    adminAllowedIps: [],
+    signupEnabled: true,
     ...overrides,
   };
 

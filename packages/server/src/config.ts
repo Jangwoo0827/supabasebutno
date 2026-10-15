@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -29,6 +30,8 @@ const envSchema = z
     STORAGE_PROJECT_QUOTA_BYTES: z.coerce.number().int().positive().default(2048 * MIB),
     REALTIME_MAX_CONNECTIONS: z.coerce.number().int().positive().default(500),
     ADMIN_CORS_ORIGINS: z.string().default(''),
+    ADMIN_ALLOWED_IPS: z.string().default(''),
+    SIGNUP_ENABLED: z.enum(['true', 'false']).default('true'),
   })
   .refine((e) => e.ADMIN_TOKEN !== e.JWT_MASTER_SECRET, {
     path: ['JWT_MASTER_SECRET'],
@@ -58,6 +61,10 @@ export interface Config {
   realtimeMaxConnections: number;
   /** Exact origins (e.g. https://me.github.io) whose pages may call /admin with a Bearer token. Empty = /admin is same-origin only. */
   adminCorsOrigins: string[];
+  /** IPs allowed to reach /admin and /dashboard (everyone else gets 404). Empty = no restriction. Needs a correct TRUST_PROXY_HOPS behind a proxy. */
+  adminAllowedIps: string[];
+  /** false = nobody can sign up (existing users can still log in). */
+  signupEnabled: boolean;
 }
 
 export class ConfigError extends Error {}
@@ -90,8 +97,19 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       }
       return o;
     });
+  const allowedIps = e.ADMIN_ALLOWED_IPS.split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((ip) => {
+      if (!isIP(ip)) throw new ConfigError(`Invalid configuration:
+  - ADMIN_ALLOWED_IPS: "${ip}" is not an IP address (comma-separated single IPs, no ranges)
+See .env.example`);
+      return ip;
+    });
   return {
     adminCorsOrigins: adminOrigins,
+    adminAllowedIps: allowedIps,
+    signupEnabled: e.SIGNUP_ENABLED === 'true',
     port: e.PORT,
     host: e.HOST,
     dataDir: resolve(e.DATA_DIR ?? DEFAULT_DATA_DIR),

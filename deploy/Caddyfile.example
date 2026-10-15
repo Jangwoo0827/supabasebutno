@@ -6,6 +6,7 @@
 api.example.com {
 	encode zstd gzip
 
+	# (한국어) 서버의 .env 에도 ADMIN_ALLOWED_IPS=<내 IP> 를 넣으면 프록시 설정이 빠져도 한 번 더 막힙니다 (TRUST_PROXY_HOPS=1 필수).
 	# Keep the admin dashboard and /admin API off the public internet if you can:
 	# only allow your own address(es).
 	@admin path /admin* /dashboard*
